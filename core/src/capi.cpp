@@ -33,6 +33,8 @@ tbt_game* tbt_game_create(int width, int visible_height, int hidden_rows, int mo
 
 void tbt_game_destroy(tbt_game* g) { delete g; }
 
+tbt_game* tbt_game_clone(tbt_game* g) { return new tbt_game{g->game, {}}; }
+
 void tbt_game_reset(tbt_game* g) { g->game.reset(); }
 
 int tbt_game_set_rows(tbt_game* g, const unsigned int* rows, int n) {

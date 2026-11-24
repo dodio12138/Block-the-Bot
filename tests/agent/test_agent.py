@@ -245,6 +245,67 @@ class TeacherDataTest(unittest.TestCase):
             self.assertIn("L2/K=8", json.loads(ev.stdout)["results"])
 
 
+class GameFeatureTest(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        d = Path(self.tmp.name)
+        (d / "challenges.json").write_text((ROOT / "data" / "challenges.json").read_text())
+        self.data = d
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def test_speculation_hits_and_matches_live(self):
+        import time as _t
+        srv, url = start_fake()
+        try:
+            FakeLLM.reply = "1"
+            s = Session(LLMClient(url, timeout_s=3), self.data, write_files=False)
+            st = s.new_game({"mode": "bag7", "agent": "llm", "speculate": 7})[0]
+            # each of the 7 pieces gets a prepared answer; wait for the background thread
+            deadline = _t.time() + 10
+            while _t.time() < deadline and not all(j.status == "done" for j in s.spec._jobs.values()):
+                _t.sleep(0.05)
+            self.assertEqual(len(s.spec._jobs), 7)
+            ref = s.game.clone()
+            ref.submit("T")
+            d = next(m for m in s.submit("T", st["game"]["state_version"]) if m["type"] == "decision")
+            self.assertTrue(d["speculative"])
+            self.assertEqual(s.stats["spec_hits"], 1)
+            # the prepared answer equals what the live path computes for the same state
+            from agent.policies import Context
+            live = s.policy.decide(Context(ref, ref.state(), ref.candidates(), "", ""))
+            self.assertEqual(live.action_id, d["action_id"])
+            self.assertIn("AI 把 T", d["friendly"])
+        finally:
+            srv.shutdown()
+
+    def test_difficulty_mapping_and_fallback(self):
+        s = Session(LLMClient("http://127.0.0.1:9/v1", timeout_s=0.2), self.data, write_files=False)
+        st = s.new_game({"mode": "free", "difficulty": "easy"})[0]
+        self.assertEqual(st["session"]["agent"], "casual")
+        self.assertEqual(st["session"]["difficulty_label"], "简单")
+        st = s.new_game({"mode": "free", "difficulty": "normal"})[0]
+        self.assertEqual(st["session"]["agent"], "heuristic")  # model offline -> classic AI
+        st = s.new_game({"mode": "free", "difficulty": "hard"})[0]
+        self.assertEqual(st["session"]["agent"], "search")
+        d = next(m for m in s.submit("I") if m["type"] == "decision")
+        self.assertEqual(d["source"], "search")
+
+    def test_stars_and_daily(self):
+        from agent.session import daily_challenge, stars_for
+        self.assertEqual([stars_for(n, 100) for n in (40, 50, 60, 75, 99)], [3, 3, 2, 2, 1])
+        a, b = daily_challenge("20261124"), daily_challenge("20261124")
+        self.assertEqual(a, b)
+        self.assertNotEqual(a["board"], daily_challenge("20261125")["board"])
+        self.assertGreaterEqual(a["budget"], 15)
+        s = Session(LLMClient("http://127.0.0.1:9/v1", timeout_s=0.2), self.data, write_files=False)
+        self.assertTrue(s.challenges[0]["id"].startswith("daily-"))
+        h = s.hello()
+        self.assertEqual([d["id"] for d in h["difficulties"]], ["easy", "normal", "hard"])
+        self.assertIn("stars", h["challenges"][0])
+
+
 class EmbeddedWorkerTest(unittest.TestCase):
     def test_grammars(self):
         from agent.worker_llm import id_grammar, strategy_grammar

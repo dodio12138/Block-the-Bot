@@ -17,3 +17,4 @@ game/bin/tbt_ai_worker
 game/bin/tbt_ai_worker.exe
 training/out*/
 training/kaggle/dataset/
+data/progress.json

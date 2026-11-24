@@ -19,6 +19,7 @@ typedef struct tbt_game tbt_game;
 TBT_API const char* tbt_version(void);
 TBT_API tbt_game* tbt_game_create(int width, int visible_height, int hidden_rows, int mode, int hold, int topout);
 TBT_API void tbt_game_destroy(tbt_game* g);
+TBT_API tbt_game* tbt_game_clone(tbt_game* g); /* independent deep copy (for speculative look-ahead) */
 TBT_API void tbt_game_reset(tbt_game* g);
 TBT_API int tbt_game_set_rows(tbt_game* g, const unsigned int* rows_bottom_up, int n);
 TBT_API int tbt_game_submit(tbt_game* g, int piece);

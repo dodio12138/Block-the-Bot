@@ -8,6 +8,20 @@ const NetClient = preload("res://scripts/net_client.gd")
 const BoardView = preload("res://scripts/board_view.gd")
 const PieceButton = preload("res://scripts/piece_button.gd")
 const PieceIcon = preload("res://scripts/piece_icon.gd")
+const Sfx = preload("res://scripts/sfx.gd")
+const AiFace = preload("res://scripts/ai_face.gd")
+const SETTINGS_PATH := "user://settings.cfg"
+const LINES := {
+	"think": ["让我想想……", "嗯……", "这块往哪放呢", "别急，我在算"],
+	"clear": ["消掉了～", "轻松！", "谢谢你的方块", "清爽！"],
+	"tspin": ["T-Spin！看到了吗？", "漂亮的旋转！"],
+	"hold": ["先存着", "这块留着有用"],
+	"worried": ["有点高了……", "你这招够狠", "我得小心点", "嗯？不太妙"],
+	"panic": ["救命！", "要顶到了！", "手下留情！"],
+	"dead": ["我输了……再来！", "你太会出题了", "顶到天花板了……"],
+	"smug": ["还不够难哦", "下次加油～", "我还能再撑一百块"],
+	"start": ["来吧，出题！", "这局我不会输", "准备好了"],
+}
 
 const MODES := ["free", "bag7", "challenge"]
 const MODE_LABELS := ["自由出题", "7-Bag 对抗", "挑战关卡"]
@@ -59,13 +73,32 @@ var shot_timer := -1.0
 var arg_agent := ""
 var arg_mode := ""
 var open_llm_on_start := false
+var force_tutorial := false
 var rng := RandomNumberGenerator.new()
+var sfx: Node
+var face: Control
+var difficulties: Array = []
+var preview: Array = []
+var scan_i := 0
+var scan_t := 0.0
+var think_hold := 0.0
+var last_risk := 0.0
+var settings := ConfigFile.new()
+var tutorial_step := -1
+const TUTORIAL := [
+	["你是出题者", "左边 7 个按钮（或键盘 I O T S Z J L）决定 AI 下一块拿到什么。你的目标：让 AI 堆到顶（Top-out）。"],
+	["看 AI 怎么接", "AI 会想一下，然后把方块放到它认为最好的位置。右边是它的表情、局面风险和对你出题习惯的猜测。"],
+	["找它的弱点", "按钮下的小条越长越红，说明这块越让 AI 难受。7-Bag 模式每袋 7 种各出一次，顺序由你定。挑战关卡在预算内推倒 AI 可以拿星。"],
+]
 
 
 func _ready() -> void:
 	rng.seed = 12345
 	_parse_args()
+	settings.load(SETTINGS_PATH)
 	_build_ui()
+	sfx.enabled = bool(settings.get_value("ui", "sound", true))
+	ui["sound_cb"].set_pressed_no_signal(sfx.enabled)
 	net = NetClient.new()
 	add_child(net)
 	net.message_received.connect(_on_message)
@@ -85,6 +118,8 @@ func _parse_args() -> void:
 			dev_mode = true
 		elif a == "--llm-settings":
 			open_llm_on_start = true
+		elif a == "--show-tutorial":
+			force_tutorial = true
 		elif a.begins_with("--agent="):
 			arg_agent = a.get_slice("=", 1)
 		elif a.begins_with("--mode="):
@@ -185,6 +220,7 @@ func _build_ui() -> void:
 		show_pressure = on
 		_refresh_buttons())
 	left.add_child(ui["pressure_cb"])
+	_label(left, "提示条越长越红 = 这块越让 AI 难受", 12, Color("#7f8aa3"), true)
 
 	_section(left, "对局设置")
 	ui["mode"] = OptionButton.new()
@@ -198,6 +234,9 @@ func _build_ui() -> void:
 	ui["challenge"].item_selected.connect(func(_i: int) -> void: _update_challenge_desc())
 	left.add_child(ui["challenge"])
 	ui["challenge_desc"] = _label(left, "", 12, Color("#9aa3b8"), true)
+	ui["difficulty"] = OptionButton.new()
+	left.add_child(ui["difficulty"])
+	ui["agent_dev_label"] = _label(left, "开发者：直接指定 AI", 12, Color("#7f8aa3"))
 	ui["agent"] = OptionButton.new()
 	left.add_child(ui["agent"])
 	ui["hold"] = CheckBox.new()
@@ -216,6 +255,22 @@ func _build_ui() -> void:
 	ui["replay_btn"].text = "回放上一局"
 	ui["replay_btn"].pressed.connect(_request_replay)
 	row.add_child(ui["replay_btn"])
+	var row2 := HBoxContainer.new()
+	left.add_child(row2)
+	ui["sound_cb"] = CheckBox.new()
+	ui["sound_cb"].text = "音效"
+	ui["sound_cb"].focus_mode = Control.FOCUS_NONE
+	ui["sound_cb"].button_pressed = true
+	ui["sound_cb"].size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	ui["sound_cb"].toggled.connect(func(on: bool) -> void:
+		sfx.enabled = on
+		settings.set_value("ui", "sound", on)
+		settings.save(SETTINGS_PATH))
+	row2.add_child(ui["sound_cb"])
+	var help := Button.new()
+	help.text = "玩法说明"
+	help.pressed.connect(func() -> void: _show_tutorial(0))
+	row2.add_child(help)
 	_section(left, "已提交序列")
 	ui["sequence"] = _label(left, "—", 14, Color("#c7cede"), true)
 	var spacer := Control.new()
@@ -239,7 +294,16 @@ func _build_ui() -> void:
 	# ---- right: AI panel
 	var right := _panel(main_h, 330)
 	_section(right, "AI 防守者")
-	ui["agent_label"] = _label(right, "—", 18, Color.WHITE)
+	var head := HBoxContainer.new()
+	head.add_theme_constant_override("separation", 10)
+	right.add_child(head)
+	face = AiFace.new()
+	head.add_child(face)
+	var hv2 := VBoxContainer.new()
+	hv2.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	head.add_child(hv2)
+	ui["agent_label"] = _label(hv2, "—", 18, Color.WHITE)
+	ui["bubble"] = _label(hv2, "", 14, Color("#ffe08a"), true)
 	ui["ai_state"] = _label(right, "等待出题", 14, Color("#9aa3b8"), true)
 	var hold_row := HBoxContainer.new()
 	hold_row.add_theme_constant_override("separation", 10)
@@ -356,6 +420,9 @@ func _build_ui() -> void:
 	close.pressed.connect(func() -> void: ui["overlay"].visible = false)
 	ovb.add_child(close)
 	_build_llm_dialog()
+	_build_tutorial()
+	sfx = Sfx.new()
+	add_child(sfx)
 	_refresh_dev()
 
 
@@ -379,6 +446,13 @@ func _handle(msg: Dictionary) -> void:
 		"thinking":
 			thinking = true
 			think_t = 0.0
+			think_hold = 0.3
+			preview = msg.get("preview", [])
+			scan_i = 0
+			scan_t = 0.0
+			face.mood = "think"
+			if rng.randf() < 0.35:
+				_say("think")
 			ui["ai_state"].text = "思考中：为 %s 评估 %d 个可达落点…" % [msg.get("piece", "?"), int(msg.get("candidate_count", 0))]
 			_set_status("AI 正在思考…")
 		"decision":
@@ -412,9 +486,16 @@ func _on_hello(msg: Dictionary) -> void:
 		ui["agent"].add_item(String(agents[i]["label"]), i)
 		if agents[i]["id"] == want:
 			ui["agent"].select(i)
-	ui["challenge"].clear()
-	for i in range(challenges.size()):
-		ui["challenge"].add_item(String(challenges[i]["name"]), i)
+	difficulties = msg.get("difficulties", [])
+	ui["difficulty"].clear()
+	var want_diff := String(settings.get_value("ui", "difficulty", "normal"))
+	for i in range(difficulties.size()):
+		var dl := String(difficulties[i]["label"])
+		var hint := {"easy": "简单（会犯错的 AI）", "normal": "普通（语言模型）", "hard": "困难（两步搜索）"}
+		ui["difficulty"].add_item("对手：" + String(hint.get(String(difficulties[i]["id"]), dl)), i)
+		if String(difficulties[i]["id"]) == want_diff:
+			ui["difficulty"].select(i)
+	_fill_challenges()
 	if arg_mode != "":
 		var mi := MODES.find(arg_mode)
 		if mi >= 0:
@@ -422,6 +503,10 @@ func _on_hello(msg: Dictionary) -> void:
 	_on_mode_changed(ui["mode"].selected)
 	_update_llm_label()
 	_new_game()
+	if force_tutorial or (not bool(settings.get_value("ui", "tutorial_done", false)) and autoplay_left <= 0 and screenshot_path == ""):
+		_show_tutorial(1 if force_tutorial else 0)
+		if force_tutorial and screenshot_path != "":
+			shot_timer = 2.0
 
 
 func _update_llm_label() -> void:
@@ -649,7 +734,8 @@ func _update_challenge_desc() -> void:
 	var idx: int = ui["mode"].selected
 	if idx == 2 and challenges.size() > 0:
 		var c: Dictionary = challenges[max(ui["challenge"].selected, 0)]
-		ui["challenge_desc"].text = String(c.get("description", ""))
+		var best = c.get("best_pieces")
+		ui["challenge_desc"].text = String(c.get("description", "")) + (("\n最好成绩：%d 块" % int(best)) if best != null else "")
 	elif idx == 1:
 		ui["challenge_desc"].text = "每袋 7 种方块各用一次，由你决定顺序。AI 存活 150 块即获胜。"
 	else:
@@ -676,6 +762,14 @@ func _new_game() -> void:
 	var ks := [0, 0, 8, 4, 16]
 	var msg := {"type": "new_game", "mode": MODES[mode_idx], "agent": agent_id, "hold": ui["hold"].button_pressed,
 		"info_level": levels[lvl], "top_k": ks[lvl]}
+	if not dev_mode and arg_agent == "" and difficulties.size() > 0:
+		var did := String(difficulties[max(ui["difficulty"].selected, 0)]["id"])
+		msg["difficulty"] = did
+		settings.set_value("ui", "difficulty", did)
+		settings.save(SETTINGS_PATH)
+	face.mood = "calm"
+	_say("start")
+	last_risk = 0.0
 	if mode_idx == 2 and challenges.size() > 0:
 		msg["challenge_id"] = challenges[max(ui["challenge"].selected, 0)]["id"]
 	_update_challenge_desc()
@@ -686,7 +780,7 @@ func _new_game() -> void:
 
 
 func _submit(p: String) -> void:
-	if busy or awaiting or replaying or state.is_empty():
+	if busy or awaiting or replaying or state.is_empty() or ui["tut"].visible:
 		return
 	if session.get("winner") != null:
 		return
@@ -697,6 +791,7 @@ func _submit(p: String) -> void:
 		_set_status("%s 已在本袋用过" % p, Color("#ff8a80"))
 		return
 	awaiting = true
+	sfx.play("pick")
 	net.send({"type": "submit_piece", "piece": p, "state_version": int(g.get("state_version", 0))})
 	_set_status("你出了 %s" % p)
 
@@ -727,7 +822,22 @@ func _apply_state(msg: Dictionary) -> void:
 	ui["risk_fill"].bg_color = Color("#5fd068").lerp(Color("#ef5350"), clampf(risk * 1.3, 0.0, 1.0))
 	ui["risk_text"].text = "风险 %.2f · 顶部危险 %.2f · 起伏 %d · 井深 %d" % [risk, float(f.get("top_risk", 0)), int(f.get("bump", 0)), int(f.get("max_well", 0))]
 	ui["hold_icon"].piece = String(state.get("hold", ""))
-	ui["agent_label"].text = String(session.get("agent_label", "—"))
+	var dlabel = session.get("difficulty_label")
+	ui["agent_label"].text = ("%s · %s" % [dlabel, String(session.get("agent_label", ""))]) if dlabel != null else String(session.get("agent_label", "—"))
+	if session.get("winner") == null:
+		var mood := "calm"
+		if risk > 0.75:
+			mood = "panic"
+		elif risk > 0.5:
+			mood = "worried"
+		face.mood = mood
+		if risk > 0.6 and last_risk <= 0.6:
+			sfx.play("danger")
+			board.flash(Color(1, 0.2, 0.2, 0.25), 0.35)
+			_say("panic" if risk > 0.75 else "worried")
+		elif risk > 0.5 and last_risk <= 0.5:
+			_say("worried")
+		last_risk = risk
 	var rs: Dictionary = state.get("ruleset", {})
 	var mode_name := "7-Bag" if String(rs.get("mode", "")) == "bag7" else "自由"
 	var ch = session.get("challenge")
@@ -816,6 +926,9 @@ func _refresh_timeline(tl: Array) -> void:
 
 func _refresh_dev() -> void:
 	ui["dev_box"].visible = dev_mode
+	ui["agent"].visible = dev_mode
+	ui["agent_dev_label"].visible = dev_mode
+	ui["difficulty"].visible = not dev_mode
 	if not dev_mode:
 		return
 	var s: Dictionary = ui.get("dev_stats", {})
@@ -824,7 +937,7 @@ func _refresh_dev() -> void:
 	t += "调用 %s 次 / %s 块（每块 %.2f）  回退率 %.0f%%  合法率 %s  调用失败率 %s\n" % [str(s.get("llm_calls", 0)), str(s.get("turns", 0)), float(s.get("calls_per_piece", 0.0)), 100.0 * float(s.get("fallback_rate", 0.0)), str(s.get("legal_rate", "-")), str(s.get("call_fail_rate", "-"))]
 	t += "模型调用 P50 %s ms · P95 %s ms\n" % [str(s.get("p50_ms", "-")), str(s.get("p95_ms", "-"))]
 	t += "平均 Token 入 %s / 出 %s\n" % [str(s.get("avg_tok_in", "-")), str(s.get("avg_tok_out", "-"))]
-	t += "来源统计 %s\n" % JSON.stringify(s.get("sources", {}))
+	t += "来源统计 %s · 预计算命中 %s\n" % [JSON.stringify(s.get("sources", {})), str(s.get("spec_hits", 0))]
 	if not d.is_empty():
 		t += "\n— 上一步 —\n"
 		t += "候选 %d · 来源 %s · 决策 %.1f ms" % [int(d.get("candidate_count", 0)), String(d.get("source", "")), float(d.get("decide_ms", 0))]
@@ -844,12 +957,21 @@ func _start_decision(d: Dictionary) -> void:
 	anim_decision = d
 	busy = true
 	var src := String(d.get("source", ""))
-	var txt := "[%s] %s" % [SOURCE_LABELS.get(src, src), String(d.get("reason", ""))]
+	board.scan_cells = []
+	var txt := String(d.get("friendly", ""))
+	if dev_mode or txt == "":
+		txt = "[%s] %s%s" % [SOURCE_LABELS.get(src, src), String(d.get("reason", "")), "（预先算好）" if bool(d.get("speculative", false)) else ""]
 	if bool(d.get("hold_only", false)):
+		sfx.play("hold")
+		if rng.randf() < 0.5:
+			_say("hold")
+	if not dev_mode:
+		pass
+	elif bool(d.get("hold_only", false)):
 		txt += "\n→ 把 %s 放进 Hold" % String(d.get("piece", ""))
 	elif bool(d.get("hold", false)):
 		txt += "\n→ 交换 Hold，放下 %s" % String(d.get("piece", ""))
-	if int(d.get("lines", 0)) > 0:
+	if dev_mode and int(d.get("lines", 0)) > 0:
 		txt += "\n→ 消除 %d 行%s" % [int(d["lines"]), "（T-Spin!）" if bool(d.get("tspin", false)) else ""]
 	ui["decision"].text = txt
 	var strat = d.get("strategy")
@@ -887,13 +1009,36 @@ func _finish_lock() -> void:
 		return
 	pending_full = board.lock_piece(d.get("cells", []), String(d.get("piece", "")))
 	lock_wait = 0.22 if not pending_full.is_empty() else 0.06
+	var n := pending_full.size()
+	if n > 0:
+		board.burst_rows(pending_full)
+		board.shake(3.0 + 2.5 * n)
+		if bool(d.get("tspin", false)):
+			sfx.play("tspin")
+			_say("tspin")
+		else:
+			sfx.play("clear%d" % clampi(n, 1, 4))
+			if rng.randf() < 0.6:
+				_say("clear")
+		face.mood = "happy"
+	else:
+		sfx.play("lock")
+		board.shake(1.2)
 
 
 func _process(delta: float) -> void:
+	if think_hold > 0.0:
+		think_hold -= delta
 	if thinking:
 		think_t += delta
 		var dots := ".".repeat(1 + int(think_t * 3.0) % 3)
 		_set_status("AI 正在思考" + dots)
+		if not preview.is_empty():
+			scan_t += delta
+			if scan_t >= 0.11:
+				scan_t = 0.0
+				scan_i = (scan_i + 1) % preview.size()
+			board.scan_cells = preview[scan_i]
 	if replaying:
 		_replay_tick(delta)
 		return
@@ -917,6 +1062,8 @@ func _process(delta: float) -> void:
 			busy = false
 		return
 	while not busy and not queue.is_empty():
+		if think_hold > 0.0 and String(queue[0].get("type", "")) == "decision":
+			break  # let the "thinking" beat play for a moment even when the answer was precomputed
 		_handle(queue.pop_front())
 	if shot_timer >= 0.0:
 		shot_timer -= delta
@@ -946,7 +1093,20 @@ func _set_status(t: String, col: Color = Color.WHITE) -> void:
 
 func _show_result() -> void:
 	var human: bool = session.get("winner") == "human"
-	ui["ov_title"].text = "你赢了！" if human else "AI 获胜"
+	if not ui["overlay"].visible:
+		if human:
+			sfx.play("topout")
+			sfx.play("win")
+			board.shake(12.0)
+			board.flash(Color(1, 0.25, 0.2, 0.45), 0.6)
+			face.mood = "dead"
+			_say("dead")
+		else:
+			sfx.play("lose")
+			face.mood = "smug"
+			_say("smug")
+	var stars := int(session.get("stars", 0))
+	ui["ov_title"].text = ("你赢了！" + ("  " + "★".repeat(stars) + "☆".repeat(3 - stars) if stars > 0 else "")) if human else "AI 获胜"
 	ui["ov_title"].add_theme_color_override("font_color", Color("#9be7a5") if human else Color("#ff8a80"))
 	var t := String(session.get("result_text", ""))
 	t += "\n出题 %d 块 · AI 消行 %d" % [int(state.get("pieces_submitted", 0)), int(state.get("lines_total", 0))]
@@ -954,14 +1114,84 @@ func _show_result() -> void:
 		t += "\n本地排行榜第 %d 名（块数越少越好）" % int(session["leaderboard_rank"])
 	if String(session.get("replay_path", "")) != "":
 		t += "\n回放：" + String(session["replay_path"])
+	if human and stars > 0:
+		t += "\n星级：块数 ≤ 预算的 50% 得 3 星，≤ 75% 得 2 星"
 	ui["ov_text"].text = t
 	ui["overlay"].visible = true
+	_fill_challenges()
 	board.banner = "TOP OUT" if human else "AI SURVIVED"
 	board.queue_redraw()
 	_set_status(String(session.get("result_text", "")))
 	if autoplay_left > 0 or screenshot_path != "":
 		autoplay_left = 0
 		_schedule_shot()
+
+
+func _say(kind: String) -> void:
+	var pool: Array = LINES.get(kind, [])
+	if pool.is_empty():
+		return
+	ui["bubble"].text = "「%s」" % String(pool[rng.randi_range(0, pool.size() - 1)])
+
+
+func _fill_challenges() -> void:
+	var keep: int = ui["challenge"].selected
+	ui["challenge"].clear()
+	for i in range(challenges.size()):
+		var c: Dictionary = challenges[i]
+		var st := int(c.get("stars", 0))
+		var mark := "★".repeat(st) + "☆".repeat(3 - st)
+		ui["challenge"].add_item("%s  %s" % [mark, String(c.get("name", ""))], i)
+	if keep >= 0 and keep < challenges.size():
+		ui["challenge"].select(keep)
+
+
+func _build_tutorial() -> void:
+	var tp := PanelContainer.new()
+	tp.add_theme_stylebox_override("panel", _style(Color("#1d2436", 0.98), 14, 22))
+	tp.custom_minimum_size = Vector2(460, 0)
+	tp.grow_horizontal = Control.GROW_DIRECTION_BOTH
+	tp.grow_vertical = Control.GROW_DIRECTION_BOTH
+	tp.set_anchors_and_offsets_preset(Control.PRESET_CENTER, Control.PRESET_MODE_MINSIZE)
+	tp.visible = false
+	add_child(tp)
+	ui["tut"] = tp
+	var v := VBoxContainer.new()
+	v.add_theme_constant_override("separation", 12)
+	tp.add_child(v)
+	ui["tut_step"] = _label(v, "", 12, Color("#7f8aa3"))
+	ui["tut_title"] = _label(v, "", 22, Color.WHITE)
+	ui["tut_text"] = _label(v, "", 15, Color("#d7dceb"), true)
+	var b := HBoxContainer.new()
+	b.alignment = BoxContainer.ALIGNMENT_END
+	v.add_child(b)
+	var skip := Button.new()
+	skip.text = "跳过"
+	skip.pressed.connect(_close_tutorial)
+	b.add_child(skip)
+	ui["tut_next"] = Button.new()
+	ui["tut_next"].pressed.connect(func() -> void:
+		if tutorial_step + 1 >= TUTORIAL.size():
+			_close_tutorial()
+		else:
+			_show_tutorial(tutorial_step + 1))
+	b.add_child(ui["tut_next"])
+
+
+func _show_tutorial(step: int) -> void:
+	tutorial_step = step
+	ui["tut_step"].text = "玩法说明 %d / %d" % [step + 1, TUTORIAL.size()]
+	ui["tut_title"].text = String(TUTORIAL[step][0])
+	ui["tut_text"].text = String(TUTORIAL[step][1])
+	ui["tut_next"].text = "开始玩" if step + 1 >= TUTORIAL.size() else "下一步"
+	ui["tut"].visible = true
+
+
+func _close_tutorial() -> void:
+	ui["tut"].visible = false
+	tutorial_step = -1
+	settings.set_value("ui", "tutorial_done", true)
+	settings.save(SETTINGS_PATH)
 
 
 # ------------------------------------------------------------------ replay

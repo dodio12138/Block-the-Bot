@@ -15,10 +15,68 @@ from .core import PIECES, ROOT, CoreGame, core_version, verify_replay
 from .llm import LLMClient
 from .memory import OpponentModel
 from .policies import Context, Decision, HierarchicalPolicy, Policy, make_policy
+from .speculate import Speculator
 
 DATA = ROOT / "data"
 PROTOCOL_VERSION = 1
 BAG7_AI_TARGET = 150
+DIFFICULTY = {  # player-facing opponent levels -> policies
+    "easy": ("casual", "简单"),
+    "normal": ("llm", "普通"),
+    "hard": ("search", "困难"),
+}
+
+
+_DAILY_CACHE: dict[str, dict] = {}
+
+
+def daily_challenge(day: Optional[str] = None) -> dict:
+    import datetime
+    day = day or datetime.date.today().strftime("%Y%m%d")
+    if day not in _DAILY_CACHE:
+        _DAILY_CACHE[day] = _make_daily(day)
+    return dict(_DAILY_CACHE[day])
+
+
+def _make_daily(day: str) -> dict:
+    """Deterministic challenge of the day: garbage start board + budget calibrated against a one-ply adversary."""
+    import random
+    import statistics
+    rng = random.Random(int(day) * 7919)
+    free = rng.random() < 0.5
+    rows = []
+    for _ in range(rng.randint(5, 10)):
+        r = ["X"] * 10
+        for h in rng.sample(range(10), rng.choice([1, 1, 2])):
+            r[h] = "."
+        rows.append("".join(r))
+    ch = {"id": f"daily-{day}", "name": f"每日挑战 {day[4:6]}-{day[6:]}", "mode": "free" if free else "bag7",
+          "hold": free, "board": rows, "daily": True}
+    runs = []
+    for seed in range(3):
+        g = CoreGame(mode=ch["mode"], hold=ch["hold"])
+        g.set_rows(rows_from_strings(rows))
+        srng = random.Random(seed)
+        while g.phase != 2 and g.state()["pieces_submitted"] < 250:
+            pr = {p: v for p, v in g.pressure().items() if v is not None}
+            worst = min(pr.values())
+            g.submit(srng.choice(sorted(p for p, v in pr.items() if v == worst)))
+            if g.phase == 2:
+                break
+            g.apply(g.best()[0])
+        runs.append(g.state()["pieces_submitted"])
+    ch["budget"] = max(15, int(statistics.median(runs) * 1.15))
+    ch["description"] = (f"今天的盘面：{len(rows)} 行垃圾行，{'自由出题，AI 有 Hold' if free else '7-Bag，AI 无 Hold'}。"
+                         f"{ch['budget']} 块内击倒 AI。每天换一题。")
+    return ch
+
+
+def stars_for(pieces: int, budget: int) -> int:
+    if pieces <= budget * 0.5:
+        return 3
+    if pieces <= budget * 0.75:
+        return 2
+    return 1
 
 
 def load_challenges(path: Path = DATA / "challenges.json") -> list[dict]:
@@ -92,6 +150,12 @@ class Session:
         self.data_dir = data_dir
         self.write_files = write_files
         self.challenges = load_challenges(data_dir / "challenges.json")
+        try:
+            self.challenges.insert(0, daily_challenge())
+        except Exception:
+            pass
+        self.spec = Speculator()
+        self.spec_n = 0
         self.game: Optional[CoreGame] = None
         self.policy: Optional[Policy] = None
         self.memory: Optional[OpponentModel] = None
@@ -110,15 +174,31 @@ class Session:
         self.llm.available(force=True)
         return {"type": "hello", "protocol_version": PROTOCOL_VERSION, "core_version": core_version(),
                 "agents": POLICY_INFO, "challenges": [self._challenge_public(c) for c in self.challenges],
+                "difficulties": [{"id": k, "label": v[1]} for k, v in DIFFICULTY.items()],
                 "llm": self.llm.status()}
 
-    @staticmethod
-    def _challenge_public(c: dict) -> dict:
-        return {k: c.get(k) for k in ("id", "name", "description", "mode", "hold", "budget")}
+    def _progress(self) -> dict:
+        try:
+            return json.loads((self.data_dir / "progress.json").read_text())
+        except (OSError, json.JSONDecodeError):
+            return {}
+
+    def _challenge_public(self, c: dict) -> dict:
+        out = {k: c.get(k) for k in ("id", "name", "description", "mode", "hold", "budget", "daily")}
+        best = self._progress().get(c.get("id", ""), {})
+        out["stars"] = int(best.get("stars", 0))
+        out["best_pieces"] = best.get("pieces")
+        return out
 
     def new_game(self, opts: dict) -> list[dict]:
+        self.spec.cancel()
         mode = opts.get("mode", "bag7")
         agent = opts.get("agent", "heuristic")
+        difficulty = opts.get("difficulty")
+        if difficulty in DIFFICULTY:
+            agent = DIFFICULTY[difficulty][0]
+            if agent == "llm" and not self.llm.available():
+                agent = "heuristic"  # model not ready: "normal" falls back to the classic AI
         challenge = None
         if mode == "challenge":
             challenge = next((c for c in self.challenges if c["id"] == opts.get("challenge_id")), None)
@@ -143,6 +223,8 @@ class Session:
         self.cfg = {
             "mode": mode, "core_mode": core_mode, "hold": hold, "agent": agent,
             "agent_label": getattr(self.policy, "label", agent),
+            "difficulty": difficulty if difficulty in DIFFICULTY else None,
+            "difficulty_label": DIFFICULTY[difficulty][1] if difficulty in DIFFICULTY else None,
             "challenge": self._challenge_public(challenge) if challenge else None,
             "budget": int(challenge["budget"]) if challenge else None,
             "ai_target": BAG7_AI_TARGET if (mode == "bag7") else None,
@@ -153,11 +235,23 @@ class Session:
         self.leaderboard_rank = None
         self.replay_path = ""
         self.stats = {"turns": 0, "llm_calls": 0, "fallbacks": 0, "invalid_outputs": 0, "call_failures": 0, "lat": [], "tok_in": [], "tok_out": [],
-                      "decide_ms": [], "sources": {}}
+                      "decide_ms": [], "sources": {}, "spec_hits": 0}
+        # speculative look-ahead: local / embedded models only by default (cloud calls cost money)
+        default_n = 0 if getattr(self.llm, "kind", "") == "cloud" else 3
+        self.spec_n = int(opts.get("speculate", default_n)) if self.policy.name == "llm" else 0
+        self.stars = 0
         self.game_id = time.strftime("%Y%m%d-%H%M%S-") + secrets.token_hex(2)
         self._log({"event": "GameStarted", "cfg": self.cfg, "core_version": core_version(),
                    "llm": self.llm.status()})
-        return [self.state_msg()]
+        msg = self.state_msg()
+        self._speculate(msg.get("pressure", {}))
+        return [msg]
+
+    def _speculate(self, pressure: dict) -> None:
+        if self.spec_n <= 0 or self.winner or not self.game or self.game.phase != 0 or not self.llm.available():
+            return
+        ranked = sorted((p for p, v in pressure.items() if v is not None), key=lambda p: -float(pressure[p]))
+        self.spec.start(self.game, self.memory, self.policy, ranked[: self.spec_n])
 
     # ------------------------------------------------------------------- turn
     def submit(self, piece: str, state_version: Optional[int] = None) -> Iterator[dict]:
@@ -185,19 +279,29 @@ class Session:
             self._log({"event": "GameOver", "reason": "block_out", "piece": piece})
             yield self.state_msg()
             return
+        cands = g.candidates(paths=True)
+        pre_scores = g.scores()
+        preview = [cands[i]["cells"] for i in sorted(range(len(cands)), key=lambda i: -pre_scores[i])[:8]
+                   if cands[i]["cells"]]
         yield {"type": "thinking", "event": "PieceSpawned", "piece": piece,
                "candidate_count": spawned["candidate_count"], "state_version": spawned["state_version"],
-               "agent": self.cfg["agent"]}
+               "agent": self.cfg["agent"], "preview": preview}
 
-        cands = g.candidates(paths=True)
         mem = self.memory.summary()
         ctx = Context(g, spawned, cands, mem["hint"], mem["recent"])
         t0 = time.perf_counter()
-        try:
-            d = self.policy.decide(ctx)
-        except Exception as e:  # never let the agent crash the game
-            cid, _ = g.best()
-            d = Decision(cid, "fallback", f"policy error: {e}", fallback=True)
+        d = None
+        if self.spec_n > 0:
+            d = self.spec.take(piece, before["state_version"], spawned["hash"],
+                               getattr(self.llm, "timeout_s", 12.0) + 1.0)
+            if d is not None:
+                self.stats["spec_hits"] += 1
+        if d is None:
+            try:
+                d = self.policy.decide(ctx)
+            except Exception as e:  # never let the agent crash the game
+                cid, _ = g.best()
+                d = Decision(cid, "fallback", f"policy error: {e}", fallback=True)
         decide_ms = (time.perf_counter() - t0) * 1000
 
         # Validate before execution (doc §8): phase, version, candidate id.
@@ -262,8 +366,25 @@ class Session:
                "tokens_in": d.tokens_in, "tokens_out": d.tokens_out, "tokens_estimated": d.tokens_estimated,
                "llm_called": d.llm_called, "fallback": d.fallback, "prompt": d.prompt, "raw": d.raw,
                "strategy": d.strategy, "events": events, "candidate_count": len(cands),
-               "top_cells": [cands[i]["cells"] for i in top], "shown_cells": shown}
-        yield self.state_msg()
+               "top_cells": [cands[i]["cells"] for i in top], "shown_cells": shown,
+               "speculative": d.speculative, "friendly": self._friendly(chosen, lines)}
+        msg = self.state_msg()
+        self._speculate(msg.get("pressure", {}))
+        yield msg
+
+    @staticmethod
+    def _friendly(c: dict, lines: int) -> str:
+        """Plain-language description of the move for normal players (no model jargon)."""
+        if c.get("hold_only"):
+            return f"AI 把 {c['piece']} 收进了 Hold"
+        xs = [p[0] for p in c.get("cells", [])]
+        col = f"第 {min(xs) + 1}～{max(xs) + 1} 列" if xs and min(xs) != max(xs) else (f"第 {xs[0] + 1} 列" if xs else "")
+        txt = f"AI 把 {c['piece']} 放在{col}"
+        if c.get("hold"):
+            txt = f"AI 换出 Hold 里的 {c['piece']}，放在{col}"
+        if lines:
+            txt += f"，消除 {lines} 行" + ("（T-Spin！）" if c.get("tspin") else "")
+        return txt
 
     # ---------------------------------------------------------------- helpers
     def state_msg(self) -> dict:
@@ -285,19 +406,25 @@ class Session:
             "avg_tok_in": round(statistics.mean(s["tok_in"]), 1) if s.get("tok_in") else None,
             "avg_tok_out": round(statistics.mean(s["tok_out"]), 1) if s.get("tok_out") else None,
             "sources": s.get("sources", {}),
+            "spec_hits": s.get("spec_hits", 0),
             "policy": self.policy.status() if self.policy else {},
         }
         budget_left = (self.cfg["budget"] - st["pieces_submitted"]) if self.cfg.get("budget") else None
         return {"type": "state", "game_id": self.game_id, "game": st, "session": {
             **self.cfg, "winner": self.winner, "result_text": self.result_text, "budget_left": budget_left,
             "replay_path": self.replay_path, "leaderboard_rank": self.leaderboard_rank,
+            "stars": getattr(self, "stars", 0),
             "llm": self.llm.status()},
             "pressure": pressure, "opponent": self.memory.summary() if self.memory else {},
             "timeline": self.timeline[-30:], "dev": dev}
 
     def _finish(self, winner: str, text: str) -> None:
         self.winner, self.result_text = winner, text
+        self.spec.cancel()
         st = self.game.state()
+        ch = self.cfg.get("challenge")
+        if winner == "human" and ch and ch.get("budget"):
+            self.stars = stars_for(st["pieces_submitted"], int(ch["budget"]))
         if not self.write_files:
             return
         rep_dir = self.data_dir / "replays"
@@ -312,6 +439,13 @@ class Session:
         self.memory.save_game(st["pieces_submitted"] if winner == "human" else None)
         if winner == "human":
             self.leaderboard_rank = self._leaderboard(st["pieces_submitted"])
+            if ch and ch.get("budget"):
+                prog = self._progress()
+                best = prog.get(ch["id"], {})
+                if self.stars > int(best.get("stars", 0)) or (best.get("pieces") or 1 << 30) > st["pieces_submitted"]:
+                    prog[ch["id"]] = {"stars": max(self.stars, int(best.get("stars", 0))),
+                                      "pieces": min(st["pieces_submitted"], best.get("pieces") or 1 << 30)}
+                    (self.data_dir / "progress.json").write_text(json.dumps(prog, ensure_ascii=False, indent=1))
 
     def _leaderboard(self, pieces: int) -> Optional[int]:
         path = self.data_dir / "leaderboard.json"

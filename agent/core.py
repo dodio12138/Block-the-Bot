@@ -47,6 +47,8 @@ def lib():
     L.tbt_game_create.argtypes = [ci, ci, ci, ci, ci, ci]
     L.tbt_game_create.restype = vp
     L.tbt_game_destroy.argtypes = [vp]
+    L.tbt_game_clone.argtypes = [vp]
+    L.tbt_game_clone.restype = vp
     L.tbt_game_reset.argtypes = [vp]
     L.tbt_game_set_rows.argtypes = [vp, ctypes.POINTER(ctypes.c_uint), ci]
     L.tbt_game_set_rows.restype = ci
@@ -93,6 +95,12 @@ class CoreGame:
                                         1 if topout == "any_above" else 0)
         if not self._h:
             raise ValueError("invalid ruleset")
+
+    def clone(self) -> "CoreGame":
+        c = CoreGame.__new__(CoreGame)
+        c.mode, c.hold = self.mode, self.hold
+        c._h = lib().tbt_game_clone(self._h)
+        return c
 
     def close(self):
         if self._h:

@@ -14,6 +14,55 @@ var active_color := Color.WHITE
 var ghost_sets: Array = []  # Array of cell arrays (dev mode outlines)
 var flash_rows: Array = []
 var banner := ""
+var scan_cells: Array = []  # candidate being "considered" while the AI thinks
+var _shake := 0.0
+var _particles: Array = []  # {p, v, life, max, col, size} in board-local pixels
+var _flash_col := Color(0, 0, 0, 0)
+var _flash_t := 0.0
+var _flash_max := 0.0
+
+
+func shake(amount: float) -> void:
+	_shake = maxf(_shake, amount)
+
+
+func flash(col: Color, dur: float) -> void:
+	_flash_col = col
+	_flash_t = dur
+	_flash_max = dur
+
+
+func burst_rows(rows: Array) -> void:
+	var m := _metrics()
+	for r in rows:
+		for x in range(width):
+			var rc := _cell_rect(x, int(r), m)
+			var col: Color = colors.get(Vector2i(x, int(r)), Color.WHITE)
+			for k in range(3):
+				_particles.append({"p": rc.get_center(), "v": Vector2(randf_range(-160, 160), randf_range(-220, 40)),
+					"life": 0.0, "max": randf_range(0.35, 0.7), "col": col.lightened(0.3), "size": randf_range(2.0, 4.5)})
+
+
+func _process(delta: float) -> void:
+	var busy := false
+	if _shake > 0.05:
+		_shake = maxf(0.0, _shake - delta * 30.0)
+		busy = true
+	if not _particles.is_empty():
+		var keep: Array = []
+		for pt in _particles:
+			pt["life"] += delta
+			if pt["life"] < pt["max"]:
+				pt["v"] += Vector2(0, 520) * delta
+				pt["p"] += pt["v"] * delta
+				keep.append(pt)
+		_particles = keep
+		busy = true
+	if _flash_t > 0.0:
+		_flash_t -= delta
+		busy = true
+	if busy or not scan_cells.is_empty():
+		queue_redraw()
 
 
 func setup(ruleset: Dictionary) -> void:
@@ -117,6 +166,8 @@ func _draw() -> void:
 	var cs: float = m[0]
 	var ox: float = m[1]
 	var oy: float = m[2]
+	if _shake > 0.05:
+		draw_set_transform(Vector2(randf_range(-_shake, _shake), randf_range(-_shake, _shake)))
 	var vis_rect := Rect2(ox, oy + hidden_show * cs, cs * width, cs * visible_h)
 	draw_rect(Rect2(ox, oy, cs * width, hidden_show * cs), Color("#0a0d14"))
 	draw_rect(vis_rect, Color("#121725"))
@@ -144,10 +195,26 @@ func _draw() -> void:
 		for c in ghost_sets[gi]:
 			if int(c[1]) < visible_h + hidden_show:
 				draw_rect(_cell_rect(int(c[0]), int(c[1]), m).grow(-3.0), gcol, false, 1.5)
+	var pulse := 0.45 + 0.35 * sin(Time.get_ticks_msec() / 90.0)
+	for c in scan_cells:
+		if int(c[1]) < visible_h + hidden_show:
+			var sr := _cell_rect(int(c[0]), int(c[1]), m).grow(-2.0)
+			draw_rect(sr, Color(0.45, 0.8, 1.0, 0.18 * pulse))
+			draw_rect(sr, Color(0.45, 0.8, 1.0, pulse), false, 1.5)
 	for c in active_cells:
 		if int(c[1]) < visible_h + hidden_show:
 			_draw_block(_cell_rect(int(c[0]), int(c[1]), m), active_color.lightened(0.15))
 
+	for pt in _particles:
+		var a: float = 1.0 - float(pt["life"]) / float(pt["max"])
+		var pc: Color = pt["col"]
+		pc.a = a
+		var sz: float = pt["size"]
+		draw_rect(Rect2(pt["p"] - Vector2(sz, sz) / 2.0, Vector2(sz, sz)), pc)
+	if _flash_t > 0.0 and _flash_max > 0.0:
+		var fc := _flash_col
+		fc.a *= _flash_t / _flash_max
+		draw_rect(vis_rect, fc)
 	draw_rect(vis_rect.grow(2.0), Color("#3a4256"), false, 2.0)
 	if banner != "":
 		var font := get_theme_default_font()

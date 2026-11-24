@@ -36,13 +36,23 @@ def main():
     ap.add_argument("--timeout", type=float, default=10.0)
     ap.add_argument("--no-model", action="store_true", help="only compute the model-free baselines")
     ap.add_argument("--out", default="")
+    ap.add_argument("--embedded", action="store_true", help="use the in-game worker (game/bin) instead of HTTP")
+    ap.add_argument("--model-file", default="", help="with --embedded: base .gguf (default: game/models)")
+    ap.add_argument("--lora-file", default="", help="with --embedded: LoRA .gguf ('none' to disable)")
+    ap.add_argument("--constrained", action="store_true", help="GBNF: only candidate ids allowed")
     a = ap.parse_args()
 
     samples = [json.loads(l) for l in open(a.data, encoding="utf-8")]
     if a.level:
         samples = [s for s in samples if s["meta"]["level"] == a.level]
     samples = samples[: a.limit]
-    llm = LLMClient(a.llm_url, a.llm_model, a.timeout)
+    if a.embedded:
+        from agent.worker_llm import WorkerLLM
+        llm = WorkerLLM(model=Path(a.model_file) if a.model_file else None,
+                        lora=(Path("/nonexistent") if a.lora_file == "none" else Path(a.lora_file)) if a.lora_file else None,
+                        timeout_s=max(a.timeout, 30))
+    else:
+        llm = LLMClient(a.llm_url, a.llm_model, a.timeout)
     use_model = not a.no_model and llm.available(force=True)
     if not a.no_model and not use_model:
         print(f"[eval] endpoint {a.llm_url} offline -> baselines only", file=sys.stderr)
@@ -58,7 +68,11 @@ def main():
         r["first"].append(label == 0)
         r["random"].append(1.0 / k)
         if use_model:
-            res = llm.chat(s["messages"][0]["content"], s["messages"][1]["content"], max_tokens=8)
+            kw = {}
+            if a.constrained:
+                from agent.worker_llm import id_grammar
+                kw["grammar"] = id_grammar(m["k"])
+            res = llm.chat(s["messages"][0]["content"], s["messages"][1]["content"], max_tokens=8, **kw)
             pred = parse_action_id(res.text) if res.ok else None
             legal = pred is not None and 0 <= pred < k
             r["legal"].append(legal)
@@ -85,7 +99,7 @@ def main():
                         "model_most_common_pos_share": round(max(pos.count(p) for p in set(pos)) / len(pos), 3)
                         if pos else None})
         report[key] = row
-    out = {"data": a.data, "endpoint": a.llm_url if use_model else None,
+    out = {"data": a.data, "endpoint": ("embedded:" + str(getattr(llm, "model_path", ""))) if a.embedded else (a.llm_url if use_model else None),
            "served_model": llm.served_model if use_model else None, "results": report}
     print(json.dumps(out, ensure_ascii=False, indent=1))
     if a.out:

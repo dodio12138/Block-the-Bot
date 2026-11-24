@@ -62,6 +62,7 @@ class Decision:
     llm_called: bool = False
     fallback: bool = False
     call_failed: bool = False  # the model call itself failed (timeout / HTTP error), not a bad answer
+    speculative: bool = False  # answer was prepared while the human was choosing (speculative look-ahead)
     prompt: str = ""
     raw: str = ""
     strategy: Optional[dict] = None
@@ -112,6 +113,21 @@ class SearchPolicy(Policy):
     def decide(self, ctx: Context) -> Decision:
         cid, _ = ctx.game.teacher(top_n=self.top_n, robust=self.robust)
         return Decision(cid, "search", f"对前 {self.top_n} 个落点 × 下一块所有可能做两步评估")
+
+
+class CasualPolicy(Policy):
+    """Easy opponent: usually the heuristic best move, but sometimes one of the next-best ones."""
+    name, label = "casual", "休闲（会犯错）"
+
+    def __init__(self, seed: int = 0, mistake: float = 0.35):
+        self.rng, self.mistake = random.Random(seed), mistake
+
+    def decide(self, ctx: Context) -> Decision:
+        scores = ctx.game.scores()
+        order = sorted(range(len(scores)), key=lambda i: -scores[i])
+        if len(order) > 1 and self.rng.random() < self.mistake:
+            return Decision(order[self.rng.randrange(1, min(4, len(order)))], "casual", "随手一放")
+        return Decision(order[0], "casual", "认真摆好")
 
 
 class RandomPolicy(Policy):
@@ -269,6 +285,8 @@ def make_policy(name: str, llm: LLMClient, opts: dict) -> Policy:
     if name == "llm":
         return DirectLLMPolicy(llm, opts.get("info_level", "L2"), int(opts.get("top_k", 8)),
                                constrained=bool(opts.get("constrained", True)))
+    if name == "casual":
+        return CasualPolicy(int(opts.get("seed", 0)) or random.randrange(1 << 30))
     if name == "search":
         return SearchPolicy(int(opts.get("top_n", 8)), float(opts.get("robust", 0.5)))
     if name == "hier":
@@ -281,5 +299,6 @@ POLICY_INFO = [
     {"id": "llm", "label": DirectLLMPolicy.label},
     {"id": "hier", "label": HierarchicalPolicy.label},
     {"id": "search", "label": SearchPolicy.label},
+    {"id": "casual", "label": CasualPolicy.label},
     {"id": "random", "label": RandomPolicy.label},
 ]

@@ -37,7 +37,8 @@ def find_models(models_dir: Path = GAME_MODELS) -> tuple[Optional[Path], Optiona
         ggufs = sorted(models_dir.glob("*.gguf"))
         if base is None:
             bases = [p for p in ggufs if "lora" not in p.name.lower()]
-            bases.sort(key=lambda p: (0 if "q8" in p.name.lower() else 1, p.name))
+            # Q4_K_M: ~3x faster than Q8_0 on CPU with the same accuracy on our test set (75.0% vs 73.5%)
+            bases.sort(key=lambda p: (0 if "q4" in p.name.lower() else 1 if "q8" in p.name.lower() else 2, p.name))
             base = bases[0] if bases else None
         if lora is None and os.environ.get("TBT_LORA") != "none":
             loras = sorted(p for p in ggufs if "lora" in p.name.lower())
@@ -129,7 +130,7 @@ class WorkerLLM:
             return False
         self.served_model = str(hello.get("model", self.model))
         self.error = ""
-        print(f"[agent] embedded inference ready: {self.served_model} (threads={self.threads})", flush=True)
+        print(f"[agent] embedded inference ready: {self.served_model} (threads={self.threads})", file=sys.stderr, flush=True)
         return True
 
     def available(self, force: bool = False) -> bool:
