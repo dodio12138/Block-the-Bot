@@ -101,7 +101,7 @@ class Server(socketserver.ThreadingTCPServer):
             r["base_url"], r["model"] = self.llm_url, self.llm_model  # CLI / env defaults
         timeout = self.llm_timeout if r["kind"] == "local" else max(self.llm_timeout, 20.0)
         return LLMClient(r["base_url"], r["model"], timeout, api_key=r["api_key"], kind=r["kind"],
-                         provider=provider, label=r["label"])
+                         provider=provider, label=r["label"], extra_body=r.get("extra_body"))
 
     def set_llm(self, msg: dict):
         provider = str(msg.get("provider", ""))

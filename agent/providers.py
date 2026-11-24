@@ -23,7 +23,9 @@ PRESETS: dict[str, dict] = {
     "local": {"label": "本地服务（llama-server / LM Studio / Ollama）", "kind": "local",
               "base_url": "http://127.0.0.1:8080/v1", "model": "qwen3-0.6b", "key_env": ""},
     "deepseek": {"label": "DeepSeek", "kind": "cloud", "base_url": "https://api.deepseek.com",
-                 "model": "deepseek-v4-flash", "key_env": "DEEPSEEK_API_KEY"},
+                 "model": "deepseek-flash", "key_env": "DEEPSEEK_API_KEY",
+                 # V4 models think by default; the game needs a one-token answer, so switch thinking off
+                 "extra_body": {"thinking": {"type": "disabled"}}},
     "openai": {"label": "OpenAI", "kind": "cloud", "base_url": "https://api.openai.com/v1",
                "model": "", "key_env": "OPENAI_API_KEY"},
     "qwen": {"label": "通义千问（DashScope）", "kind": "cloud",
@@ -61,7 +63,7 @@ def resolve(provider: str, cfg: Optional[dict] = None, session_keys: Optional[di
     out = {"provider": provider, "kind": preset["kind"], "label": preset["label"],
            "base_url": saved.get("base_url") or preset.get("base_url", ""),
            "model": saved.get("model") or preset.get("model", ""),
-           "key_env": preset.get("key_env", "")}
+           "key_env": preset.get("key_env", ""), "extra_body": dict(preset.get("extra_body", {}))}
     key = ""
     if out["key_env"] and os.environ.get(out["key_env"]):
         key, out["key_source"] = os.environ[out["key_env"]], "env"

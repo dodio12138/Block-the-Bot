@@ -372,6 +372,9 @@ class FakeCloud(BaseHTTPRequestHandler):
         type(self).bodies.append(body)
         if not self._authed():
             return self._send(401, {"error": "bad key"})
+        if "THINK_FOREVER" in body["messages"][-1]["content"]:
+            return self._send(200, {"choices": [{"message": {"content": "", "reasoning_content": "..."},
+                                                 "finish_reason": "length"}]})
         text = '{"strategy":"dig","valid_for":4}' if body.get("response_format") else "3"
         self._send(200, {"choices": [{"message": {"content": text}}], "usage": {"prompt_tokens": 300, "completion_tokens": 1}})
 
@@ -403,9 +406,18 @@ class CloudProviderTest(unittest.TestCase):
         self.assertNotIn("grammar", b)
         self.assertNotIn("chat_template_kwargs", b)
         self.assertNotIn("/no_think", b["messages"][1]["content"])
+        c2 = LLMClient(self.url, "cloud-flash", 5, api_key=FakeCloud.KEY, kind="cloud",
+                       extra_body={"thinking": {"type": "disabled"}})
+        self.assertTrue(c2.chat("sys", "x", max_tokens=8).ok)
+        self.assertEqual(FakeCloud.bodies[-1]["thinking"], {"type": "disabled"})
+        from agent.providers import resolve
+        self.assertEqual(resolve("deepseek", {})["extra_body"], {"thinking": {"type": "disabled"}})
         bad = LLMClient(self.url, "cloud-flash", 5, api_key="wrong", kind="cloud")
         self.assertFalse(bad.available(force=True))
         self.assertIn("401", bad.error)
+        empty = c.chat("sys", "THINK_FOREVER", max_tokens=8)
+        self.assertFalse(empty.ok)
+        self.assertIn("思考", empty.error)
         missing = LLMClient(self.url, "nope", 5, api_key=FakeCloud.KEY, kind="cloud")
         self.assertFalse(missing.available(force=True))
 

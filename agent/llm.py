@@ -35,7 +35,8 @@ class LLMClient:
     kind="cloud": DeepSeek / OpenAI / ... — standard fields only, Bearer key, JSON mode instead of grammar."""
 
     def __init__(self, base_url: str = DEFAULT_URL, model: str = DEFAULT_MODEL, timeout_s: float = DEFAULT_TIMEOUT,
-                 api_key: str = "", kind: str = "local", provider: str = "local", label: str = ""):
+                 api_key: str = "", kind: str = "local", provider: str = "local", label: str = "",
+                 extra_body: Optional[dict] = None):
         self.base_url = base_url.rstrip("/")
         self.model = model
         self.timeout_s = timeout_s
@@ -43,6 +44,7 @@ class LLMClient:
         self.kind = kind
         self.provider = provider
         self.label = label
+        self.extra_body = dict(extra_body or {})  # provider-specific request fields (e.g. DeepSeek thinking switch)
         self.supports_grammar = kind == "local"  # llama-server accepts a GBNF "grammar" field
         self._avail: Optional[bool] = None
         self._avail_checked = 0.0
@@ -109,6 +111,7 @@ class LLMClient:
             body["max_tokens"] = max(max_tokens, 1024 if _is_reasoning(self.model) else 64)
             if json_mode:
                 body["response_format"] = {"type": "json_object"}
+            body.update(self.extra_body)
         req = urllib.request.Request(self.base_url + "/chat/completions", data=json.dumps(body).encode(),
                                      headers=self._headers(), method="POST")
         t0 = time.perf_counter()
@@ -126,9 +129,12 @@ class LLMClient:
             return LLMResult(False, latency_ms=(time.perf_counter() - t0) * 1000, error=f"{type(e).__name__}: {e}")
         ms = (time.perf_counter() - t0) * 1000
         try:
-            text = data["choices"][0]["message"].get("content") or ""
+            choice = data["choices"][0]
+            text = choice["message"].get("content") or ""
         except (KeyError, IndexError, TypeError):
             return LLMResult(False, latency_ms=ms, error="malformed response")
+        if not text.strip() and choice.get("finish_reason") == "length":
+            return LLMResult(False, latency_ms=ms, error="输出被思考过程占满（没有给出答案），请换非思考模型或关闭思考")
         usage = data.get("usage") or {}
         pt, ct = usage.get("prompt_tokens"), usage.get("completion_tokens")
         est = pt is None or ct is None

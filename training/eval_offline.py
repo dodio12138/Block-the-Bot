@@ -40,6 +40,7 @@ def main():
     ap.add_argument("--model-file", default="", help="with --embedded: base .gguf (default: game/models)")
     ap.add_argument("--lora-file", default="", help="with --embedded: LoRA .gguf ('none' to disable)")
     ap.add_argument("--constrained", action="store_true", help="GBNF: only candidate ids allowed")
+    ap.add_argument("--provider", default="", help="cloud provider from ~/.block-the-bot/llm.json (e.g. deepseek)")
     a = ap.parse_args()
 
     samples = [json.loads(l) for l in open(a.data, encoding="utf-8")]
@@ -51,6 +52,12 @@ def main():
         llm = WorkerLLM(model=Path(a.model_file) if a.model_file else None,
                         lora=(Path("/nonexistent") if a.lora_file == "none" else Path(a.lora_file)) if a.lora_file else None,
                         timeout_s=max(a.timeout, 30))
+    elif a.provider:
+        from agent.providers import resolve
+        r = resolve(a.provider)
+        llm = LLMClient(r["base_url"], r["model"], max(a.timeout, 30), api_key=r["api_key"], kind=r["kind"],
+                        provider=a.provider, label=r["label"], extra_body=r.get("extra_body"))
+        a.llm_url = f"{a.provider}:{r['model']}"
     else:
         llm = LLMClient(a.llm_url, a.llm_model, a.timeout)
     use_model = not a.no_model and llm.available(force=True)
