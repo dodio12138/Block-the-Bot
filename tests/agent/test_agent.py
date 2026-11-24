@@ -283,6 +283,117 @@ class EmbeddedWorkerTest(unittest.TestCase):
             w.close()
 
 
+class FakeCloud(BaseHTTPRequestHandler):
+    KEY = "sk-test-123"
+    bodies: list = []
+
+    def log_message(self, *a):
+        pass
+
+    def _send(self, code, obj):
+        b = json.dumps(obj).encode()
+        self.send_response(code)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(b)))
+        self.end_headers()
+        self.wfile.write(b)
+
+    def _authed(self):
+        return self.headers.get("Authorization") == f"Bearer {self.KEY}"
+
+    def do_GET(self):
+        if not self._authed():
+            return self._send(401, {"error": "bad key"})
+        self._send(200, {"data": [{"id": "cloud-flash"}, {"id": "cloud-pro"}]})
+
+    def do_POST(self):
+        body = json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0))))
+        type(self).bodies.append(body)
+        if not self._authed():
+            return self._send(401, {"error": "bad key"})
+        text = '{"strategy":"dig","valid_for":4}' if body.get("response_format") else "3"
+        self._send(200, {"choices": [{"message": {"content": text}}], "usage": {"prompt_tokens": 300, "completion_tokens": 1}})
+
+
+class CloudProviderTest(unittest.TestCase):
+    def setUp(self):
+        import agent.providers as prov
+        self.prov = prov
+        self.tmp = tempfile.TemporaryDirectory()
+        self._old = prov.CONFIG_PATH
+        prov.CONFIG_PATH = Path(self.tmp.name) / "llm.json"
+        self.srv = HTTPServer(("127.0.0.1", 0), FakeCloud)
+        threading.Thread(target=self.srv.serve_forever, daemon=True).start()
+        self.url = f"http://127.0.0.1:{self.srv.server_address[1]}/v1"
+        FakeCloud.bodies = []
+
+    def tearDown(self):
+        self.prov.CONFIG_PATH = self._old
+        self.srv.shutdown()
+        self.tmp.cleanup()
+
+    def test_cloud_client_body_and_auth(self):
+        c = LLMClient(self.url, "cloud-flash", 5, api_key=FakeCloud.KEY, kind="cloud", provider="custom")
+        self.assertTrue(c.available(force=True))
+        self.assertFalse(c.supports_grammar)
+        r = c.chat("sys", "C=0:1;1:2\nOUT=ID /no_think", max_tokens=8, grammar="root ::= \"0\"")
+        self.assertTrue(r.ok)
+        b = FakeCloud.bodies[-1]
+        self.assertNotIn("grammar", b)
+        self.assertNotIn("chat_template_kwargs", b)
+        self.assertNotIn("/no_think", b["messages"][1]["content"])
+        bad = LLMClient(self.url, "cloud-flash", 5, api_key="wrong", kind="cloud")
+        self.assertFalse(bad.available(force=True))
+        self.assertIn("401", bad.error)
+        missing = LLMClient(self.url, "nope", 5, api_key=FakeCloud.KEY, kind="cloud")
+        self.assertFalse(missing.available(force=True))
+
+    def test_session_with_cloud_policies(self):
+        c = LLMClient(self.url, "cloud-flash", 5, api_key=FakeCloud.KEY, kind="cloud", provider="custom")
+        s = Session(c, write_files=False)
+        s.new_game({"mode": "bag7", "agent": "llm"})
+        d = next(m for m in s.submit("T") if m["type"] == "decision")
+        self.assertEqual(d["source"], "llm")
+        s.new_game({"mode": "bag7", "agent": "hier"})
+        d = next(m for m in s.submit("S") if m["type"] == "decision")
+        self.assertEqual(d["strategy"]["strategy"], "dig")
+        self.assertEqual(FakeCloud.bodies[-1]["response_format"], {"type": "json_object"})
+
+    def test_server_set_llm_and_key_handling(self):
+        from agent.server import Server
+        srv = Server(0, "http://127.0.0.1:9/v1", "x", 2.0)
+        threading.Thread(target=srv.serve_forever, daemon=True).start()
+        try:
+            sock = socket.create_connection(srv.server_address, timeout=10)
+            f = sock.makefile("rwb")
+
+            def call(o):
+                f.write((json.dumps(o) + "\n").encode()); f.flush()
+                return json.loads(f.readline())
+            r = call({"type": "set_llm", "provider": "custom", "base_url": self.url, "model": "cloud-flash",
+                      "api_key": FakeCloud.KEY, "remember": False})
+            self.assertEqual(r["type"], "llm_config")
+            self.assertTrue(r["status"]["available"], r["status"])
+            self.assertEqual(r["models"], ["cloud-flash", "cloud-pro"])
+            raw = json.dumps(r)
+            self.assertNotIn(FakeCloud.KEY, raw)
+            saved = json.loads(self.prov.CONFIG_PATH.read_text())
+            self.assertEqual(saved["provider"], "custom")
+            self.assertNotIn("api_key", saved["providers"]["custom"])
+            self.assertEqual(oct(self.prov.CONFIG_PATH.stat().st_mode & 0o777), "0o600")
+            call({"type": "set_llm", "provider": "custom", "api_key": FakeCloud.KEY, "remember": True})
+            self.assertEqual(json.loads(self.prov.CONFIG_PATH.read_text())["providers"]["custom"]["api_key"], FakeCloud.KEY)
+            m = call({"type": "list_models", "provider": "custom"})
+            self.assertEqual(m["models"], ["cloud-flash", "cloud-pro"])
+            g = call({"type": "get_llm"})
+            self.assertNotIn(FakeCloud.KEY, json.dumps(g))
+            self.assertTrue(any(p["id"] == "deepseek" for p in g["providers"]))
+            sock.close()
+        finally:
+            srv.shutdown()
+            srv.server_close()
+
+
 class ServerTest(unittest.TestCase):
     def test_tcp_roundtrip(self):
         from agent.server import Server

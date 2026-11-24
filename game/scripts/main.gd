@@ -1,6 +1,6 @@
 ## Block the Bot — main screen.
 ## Left: attacker controls. Centre: AI board. Right: AI strategy/risk panel. Bottom: timeline.
-## User args (after `--`): --autoplay=N --screenshot=PATH --quit --dev --agent=ID --mode=free|bag7|challenge
+## User args (after `--`): --autoplay=N --screenshot=PATH --quit --dev --agent=ID --mode=free|bag7|challenge --llm-settings
 extends Control
 
 const Pieces = preload("res://scripts/pieces.gd")
@@ -13,7 +13,7 @@ const MODES := ["free", "bag7", "challenge"]
 const MODE_LABELS := ["自由出题", "7-Bag 对抗", "挑战关卡"]
 const SOURCE_LABELS := {
 	"heuristic": "传统启发式",
-	"llm": "0.6B 模型",
+	"llm": "语言模型",
 	"fallback": "回退（启发式）",
 	"hier-local": "分层：本地控制器",
 	"random": "随机",
@@ -58,6 +58,7 @@ var quit_after_shot := false
 var shot_timer := -1.0
 var arg_agent := ""
 var arg_mode := ""
+var open_llm_on_start := false
 var rng := RandomNumberGenerator.new()
 
 
@@ -82,6 +83,8 @@ func _parse_args() -> void:
 			quit_after_shot = true
 		elif a == "--dev":
 			dev_mode = true
+		elif a == "--llm-settings":
+			open_llm_on_start = true
 		elif a.begins_with("--agent="):
 			arg_agent = a.get_slice("=", 1)
 		elif a.begins_with("--mode="):
@@ -275,6 +278,11 @@ func _build_ui() -> void:
 	_section(right, "对手模型")
 	ui["opponent"] = _label(right, "—", 14, Color("#d7dceb"), true)
 	ui["llm"] = _label(right, "", 12, Color("#7f8aa3"), true)
+	ui["llm_btn"] = Button.new()
+	ui["llm_btn"].text = "模型设置…（本地 / DeepSeek 等 API）"
+	ui["llm_btn"].focus_mode = Control.FOCUS_NONE
+	ui["llm_btn"].pressed.connect(_open_llm_dialog)
+	right.add_child(ui["llm_btn"])
 	ui["dev_cb"] = CheckButton.new()
 	ui["dev_cb"].text = "开发者模式 (F1)"
 	ui["dev_cb"].focus_mode = Control.FOCUS_NONE
@@ -347,6 +355,7 @@ func _build_ui() -> void:
 	close.text = "查看棋盘"
 	close.pressed.connect(func() -> void: ui["overlay"].visible = false)
 	ovb.add_child(close)
+	_build_llm_dialog()
 	_refresh_dev()
 
 
@@ -376,6 +385,10 @@ func _handle(msg: Dictionary) -> void:
 			_start_decision(msg)
 		"replay":
 			_start_replay(msg)
+		"llm_config":
+			_on_llm_config(msg)
+		"models":
+			_on_models(msg)
 		"error":
 			awaiting = false
 			_set_status("⚠ " + String(msg.get("message", "")), Color("#ff8a80"))
@@ -387,6 +400,7 @@ func _handle(msg: Dictionary) -> void:
 
 func _on_hello(msg: Dictionary) -> void:
 	got_hello = true
+	net.send({"type": "get_llm"})
 	agents = msg.get("agents", [])
 	challenges = msg.get("challenges", [])
 	llm_info = msg.get("llm", {})
@@ -411,13 +425,217 @@ func _on_hello(msg: Dictionary) -> void:
 
 
 func _update_llm_label() -> void:
-	var embedded := String(llm_info.get("url", "")) == "embedded"
-	if bool(llm_info.get("available", false)):
-		ui["llm"].text = ("0.6B：游戏内嵌推理（%s）" if embedded else "0.6B 服务：在线（%s）") % String(llm_info.get("served_model", llm_info.get("model", "")))
-	elif embedded:
-		ui["llm"].text = "0.6B：内嵌推理未就绪 → 启发式回退\n%s" % String(llm_info.get("error", ""))
+	var backend := String(llm_info.get("backend", "embedded" if String(llm_info.get("url", "")) == "embedded" else "local"))
+	var mname := String(llm_info.get("served_model", ""))
+	if mname == "":
+		mname = String(llm_info.get("model", ""))
+	var err := String(llm_info.get("error", ""))
+	if backend == "embedded":
+		if bool(llm_info.get("available", false)):
+			ui["llm"].text = "AI 模型：游戏内嵌推理（%s）" % mname
+		else:
+			ui["llm"].text = "AI 模型：内嵌推理未就绪 → 启发式回退\n%s" % err
+	elif backend == "cloud":
+		var label := String(llm_info.get("label", "云端 API"))
+		if bool(llm_info.get("available", false)):
+			ui["llm"].text = "AI 模型：%s 云端 API（%s）" % [label, mname]
+		else:
+			ui["llm"].text = "AI 模型：%s 不可用 → 启发式回退\n%s" % [label, err]
 	else:
-		ui["llm"].text = "0.6B 服务：离线 → 模型模式将使用启发式回退\n(%s)" % String(llm_info.get("url", ""))
+		if bool(llm_info.get("available", false)):
+			ui["llm"].text = "AI 模型：本地服务（%s）" % mname
+		else:
+			ui["llm"].text = "AI 模型：本地服务离线 → 启发式回退\n(%s)" % String(llm_info.get("url", ""))
+
+
+# ------------------------------------------------------------ model settings
+var llm_providers: Array = []
+var llm_current := ""
+var llm_apply_pending := false
+
+
+func _build_llm_dialog() -> void:
+	var dlg := PanelContainer.new()
+	dlg.add_theme_stylebox_override("panel", _style(Color("#1d2436", 0.98), 14, 20))
+	dlg.custom_minimum_size = Vector2(520, 0)
+	dlg.grow_horizontal = Control.GROW_DIRECTION_BOTH
+	dlg.grow_vertical = Control.GROW_DIRECTION_BOTH
+	dlg.set_anchors_and_offsets_preset(Control.PRESET_CENTER, Control.PRESET_MODE_MINSIZE)
+	dlg.visible = false
+	add_child(dlg)
+	ui["llm_dlg"] = dlg
+	var v := VBoxContainer.new()
+	v.add_theme_constant_override("separation", 8)
+	dlg.add_child(v)
+	_label(v, "AI 模型来源", 20, Color.WHITE)
+	_label(v, "「模型直接决策」和「模型分层策略」会调用这里选的模型。云端 API 按调用计费，每块大约 300～600 个输入 token。", 12, Color("#9aa3b8"), true)
+	ui["llm_provider"] = OptionButton.new()
+	ui["llm_provider"].item_selected.connect(func(_i: int) -> void: _fill_llm_fields())
+	v.add_child(ui["llm_provider"])
+	ui["llm_hint"] = _label(v, "", 12, Color("#9aa3b8"), true)
+	_label(v, "接口地址（OpenAI 兼容）", 12, Color("#7f8aa3"))
+	ui["llm_url"] = LineEdit.new()
+	ui["llm_url"].placeholder_text = "https://api.example.com/v1"
+	v.add_child(ui["llm_url"])
+	_label(v, "模型", 12, Color("#7f8aa3"))
+	var mrow := HBoxContainer.new()
+	v.add_child(mrow)
+	ui["llm_model"] = LineEdit.new()
+	ui["llm_model"].size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	ui["llm_model"].placeholder_text = "模型名，或点「获取模型列表」"
+	mrow.add_child(ui["llm_model"])
+	ui["llm_models"] = OptionButton.new()
+	ui["llm_models"].custom_minimum_size = Vector2(170, 0)
+	ui["llm_models"].item_selected.connect(func(i: int) -> void:
+		ui["llm_model"].text = ui["llm_models"].get_item_text(i))
+	mrow.add_child(ui["llm_models"])
+	_label(v, "API Key", 12, Color("#7f8aa3"))
+	ui["llm_key"] = LineEdit.new()
+	ui["llm_key"].secret = true
+	v.add_child(ui["llm_key"])
+	ui["llm_remember"] = CheckBox.new()
+	ui["llm_remember"].text = "记住 Key（保存在本机 ~/.block-the-bot/llm.json，不进项目和 git）"
+	ui["llm_remember"].focus_mode = Control.FOCUS_NONE
+	v.add_child(ui["llm_remember"])
+	var brow := HBoxContainer.new()
+	brow.alignment = BoxContainer.ALIGNMENT_END
+	v.add_child(brow)
+	var lst := Button.new()
+	lst.text = "获取模型列表"
+	lst.pressed.connect(_llm_list_models)
+	brow.add_child(lst)
+	var apply := Button.new()
+	apply.text = "保存并使用"
+	apply.pressed.connect(_llm_apply)
+	brow.add_child(apply)
+	var cls := Button.new()
+	cls.text = "关闭"
+	cls.pressed.connect(func() -> void: ui["llm_dlg"].visible = false)
+	brow.add_child(cls)
+	ui["llm_status"] = _label(v, "", 13, Color("#c7cede"), true)
+
+
+func _open_llm_dialog() -> void:
+	ui["llm_dlg"].visible = true
+	ui["llm_status"].text = ""
+	net.send({"type": "get_llm"})
+
+
+func _selected_provider() -> Dictionary:
+	var i: int = ui["llm_provider"].selected
+	if i < 0 or i >= llm_providers.size():
+		return {}
+	return llm_providers[i]
+
+
+func _fill_llm_fields() -> void:
+	var p := _selected_provider()
+	if p.is_empty():
+		return
+	var kind := String(p.get("kind", ""))
+	ui["llm_url"].text = String(p.get("base_url", ""))
+	ui["llm_url"].editable = kind != "embedded"
+	ui["llm_model"].text = String(p.get("model", ""))
+	ui["llm_model"].editable = kind != "embedded"
+	ui["llm_key"].text = ""
+	ui["llm_key"].editable = kind == "cloud"
+	ui["llm_models"].clear()
+	var src := String(p.get("key_source", ""))
+	if kind == "embedded":
+		ui["llm_key"].placeholder_text = "不需要"
+		ui["llm_hint"].text = "游戏自带的推理进程和模型（game/bin、game/models），离线可用。"
+	elif kind == "local":
+		ui["llm_key"].placeholder_text = "不需要"
+		ui["llm_hint"].text = "本机的 OpenAI 兼容服务，例如 scripts/start_llm.sh 启动的 llama-server。"
+	else:
+		var placeholder := "粘贴 API Key"
+		if src == "env":
+			placeholder = "已从环境变量 %s 读取" % String(p.get("key_env", ""))
+		elif src == "file":
+			placeholder = "已保存（留空表示继续使用）"
+		elif src == "memory":
+			placeholder = "本次运行已填写（留空表示继续使用）"
+		ui["llm_key"].placeholder_text = placeholder
+		ui["llm_hint"].text = "云端 API。也可以设置环境变量 %s 提供 Key。模型名会变，建议点「获取模型列表」选一个。" % String(p.get("key_env", "TBT_API_KEY"))
+	ui["llm_remember"].button_pressed = src == "file"
+	ui["llm_remember"].disabled = kind != "cloud"
+
+
+func _on_llm_config(msg: Dictionary) -> void:
+	llm_providers = msg.get("providers", [])
+	llm_current = String(msg.get("current", ""))
+	llm_info = msg.get("status", llm_info)
+	_update_llm_label()
+	ui["llm_provider"].clear()
+	var sel := 0
+	for i in range(llm_providers.size()):
+		ui["llm_provider"].add_item(String(llm_providers[i].get("label", "")), i)
+		if String(llm_providers[i].get("id", "")) == llm_current:
+			sel = i
+	ui["llm_provider"].select(sel)
+	_fill_llm_fields()
+	if open_llm_on_start:
+		open_llm_on_start = false
+		ui["llm_dlg"].visible = true
+		for i in range(llm_providers.size()):
+			if String(llm_providers[i].get("id", "")) == "deepseek":
+				ui["llm_provider"].select(i)
+				_fill_llm_fields()
+	if msg.has("models"):
+		_on_models({"models": msg["models"], "error": ""})
+	var st: Dictionary = msg.get("status", {})
+	if llm_apply_pending:
+		llm_apply_pending = false
+		if bool(st.get("available", false)):
+			ui["llm_status"].text = "已切换：%s（%s）。新对局开始。" % [String(st.get("label", llm_current)), String(st.get("served_model", st.get("model", "")))]
+			ui["llm_status"].add_theme_color_override("font_color", Color("#9be7a5"))
+			_new_game()
+		else:
+			ui["llm_status"].text = "连接失败：%s（对局会回退到启发式）" % String(st.get("error", ""))
+			ui["llm_status"].add_theme_color_override("font_color", Color("#ff8a80"))
+
+
+func _on_models(msg: Dictionary) -> void:
+	ui["llm_models"].clear()
+	var models: Array = msg.get("models", [])
+	for m in models:
+		ui["llm_models"].add_item(String(m))
+	if String(msg.get("error", "")) != "":
+		ui["llm_status"].text = "获取模型列表失败：" + String(msg["error"])
+		ui["llm_status"].add_theme_color_override("font_color", Color("#ff8a80"))
+	elif models.size() > 0:
+		ui["llm_status"].text = "找到 %d 个模型。" % models.size()
+		ui["llm_status"].add_theme_color_override("font_color", Color("#c7cede"))
+		var cur := String(ui["llm_model"].text)
+		for i in range(models.size()):
+			if String(models[i]) == cur:
+				ui["llm_models"].select(i)
+
+
+func _llm_list_models() -> void:
+	var p := _selected_provider()
+	if p.is_empty():
+		return
+	ui["llm_status"].text = "正在获取模型列表…"
+	var msg := {"type": "list_models", "provider": p.get("id", ""), "base_url": ui["llm_url"].text}
+	if String(ui["llm_key"].text).strip_edges() != "":
+		msg["api_key"] = String(ui["llm_key"].text).strip_edges()
+	net.send(msg)
+
+
+func _llm_apply() -> void:
+	var p := _selected_provider()
+	if p.is_empty():
+		return
+	var msg := {"type": "set_llm", "provider": p.get("id", ""), "model": ui["llm_model"].text,
+		"base_url": ui["llm_url"].text, "remember": ui["llm_remember"].button_pressed}
+	if String(ui["llm_key"].text).strip_edges() != "":
+		msg["api_key"] = String(ui["llm_key"].text).strip_edges()
+	ui["llm_key"].text = ""
+	ui["llm_status"].text = "正在连接…"
+	ui["llm_status"].add_theme_color_override("font_color", Color("#c7cede"))
+	llm_apply_pending = true
+	net.send(msg)
 
 
 func _on_mode_changed(idx: int) -> void:
@@ -637,7 +855,7 @@ func _start_decision(d: Dictionary) -> void:
 	var strat = d.get("strategy")
 	if strat is Dictionary and strat.has("strategy"):
 		var sname := String(strat["strategy"])
-		ui["strategy"].text = "当前策略：%s（%s 制定，有效 %d 块）" % [STRATEGY_LABELS.get(sname, sname), "0.6B" if String(strat.get("source", "")) == "llm" else "规则", int(strat.get("valid_for", 0))]
+		ui["strategy"].text = "当前策略：%s（%s 制定，有效 %d 块）" % [STRATEGY_LABELS.get(sname, sname), "模型" if String(strat.get("source", "")) == "llm" else "规则", int(strat.get("valid_for", 0))]
 	else:
 		ui["strategy"].text = ""
 	var delta: float = float(d.get("pressure_delta", 0.0))

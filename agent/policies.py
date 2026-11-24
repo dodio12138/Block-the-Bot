@@ -133,7 +133,7 @@ def _fallback(ctx: Context, why: str, d: Optional[Decision] = None) -> Decision:
 
 
 class DirectLLMPolicy(Policy):
-    name, label = "llm", "0.6B 直接决策"
+    name, label = "llm", "模型直接决策"
 
     def __init__(self, llm: LLMClient, level: str = "L2", top_k: int = 8, shuffle: bool = True,
                  constrained: bool = True):
@@ -164,7 +164,7 @@ class DirectLLMPolicy(Policy):
 
 
 class HierarchicalPolicy(Policy):
-    name, label = "hier", "0.6B 分层策略"
+    name, label = "hier", "模型分层策略"
 
     def __init__(self, llm: LLMClient, valid_for: int = 5, risk_delta: float = 0.18):
         self.llm, self.default_valid, self.risk_delta = llm, valid_for, risk_delta
@@ -219,7 +219,8 @@ class HierarchicalPolicy(Policy):
                 prev = (self.strategy or {}).get("strategy", "")
                 prompt = encode_strategy(ctx.state, ctx.opp_hint, ctx.recent, prev, ctx.state["lines_total"])
                 grammar = strategy_grammar(list(STRATEGY_PRESETS)) if getattr(self.llm, "supports_grammar", False) else None
-                res = self.llm.chat(prompt.system, prompt.user, max_tokens=60, grammar=grammar)
+                kw = {"json_mode": True} if getattr(self.llm, "kind", "") == "cloud" else {}
+                res = self.llm.chat(prompt.system, prompt.user, max_tokens=60, grammar=grammar, **kw)
                 self.calls += 1
                 d.llm_called, d.prompt, d.raw = True, prompt.user, res.text
                 d.inference_ms, d.tokens_in, d.tokens_out = res.latency_ms, res.prompt_tokens, res.completion_tokens

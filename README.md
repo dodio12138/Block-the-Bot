@@ -13,7 +13,7 @@ Godot 4.7 客户端 (game/)  ──TCP JSON-lines──▶  Python Agent 服务 
 ## 快速开始
 
 ```bash
-scripts/run_tests.sh      # 编译 C++ 核心（含内嵌推理进程）+ 10 项规则测试 + 18 项 Agent 测试
+scripts/run_tests.sh      # 编译 C++ 核心（含内嵌推理进程）+ 10 项规则测试 + 21 项 Agent 测试
 ```
 
 ```bash
@@ -35,6 +35,15 @@ scripts/run_game.sh
 模型文件不进 git，放法见 [game/models/README.md](game/models/README.md)。底模是 Qwen3-0.6B-Q8_0（Apache-2.0），适配器是本项目训练的 `bot-lora-v1.gguf`。
 
 「0.6B 直接决策」用 GBNF 约束解码：模型只能输出当前候选里的 ID。「分层策略」同样只能输出合法的策略 JSON。Agent 服务仍然会再校验一遍；推理进程崩溃或超时时，自动回退到启发式并记录。
+
+### 接 DeepSeek 等云端 API
+
+在游戏右侧点「模型设置…」，选择模型来源：游戏内嵌 / 本地服务 / DeepSeek / OpenAI / 通义千问 / Kimi / 智谱 GLM / 自定义 OpenAI 兼容接口。填好 API Key 后点「获取模型列表」，游戏会通过 `GET /models` 列出你账号下真实可用的模型（模型名会随厂商更新变化，比如 DeepSeek 的 `deepseek-chat` 已在 2026-07 废弃），选好后点「保存并使用」，会自动开始新对局。
+
+- API Key 只在 Agent 服务进程的内存里保存；勾选「记住」后才写入 `~/.block-the-bot/llm.json`（权限 600，不在项目目录里）。环境变量（`DEEPSEEK_API_KEY`、`OPENAI_API_KEY`、`DASHSCOPE_API_KEY`、`MOONSHOT_API_KEY`、`ZHIPUAI_API_KEY`、`TBT_API_KEY`）优先级最高，而且永远不会写入文件。
+- Key 不会发回游戏界面，也不会写进日志和回放。
+- 云端请求只发标准 OpenAI 字段，不带本地专用的 grammar 和 enable_thinking；分层策略使用 JSON 模式。云端没有约束解码，输出照样由 Agent 校验，不合法就回退到启发式。
+- 「直接决策」每块调用一次，L2 Top-8 每次约 300 个输入 token。想省钱可以用「分层策略」，每 3～5 块才调用一次。
 
 也可以改用外部的 OpenAI 兼容接口，例如 llama-server、LM Studio 或 Ollama：
 
