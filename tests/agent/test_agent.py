@@ -191,6 +191,45 @@ class SessionTest(unittest.TestCase):
         self.assertEqual(m[0]["type"], "error")
 
 
+class TeacherDataTest(unittest.TestCase):
+    def test_teacher_binding(self):
+        g = CoreGame(mode="free", hold=False)
+        g.submit("T")
+        cid, vals = g.teacher(top_n=6)
+        self.assertTrue(0 <= cid < g.candidate_count)
+        self.assertEqual(len(vals), g.candidate_count)
+        self.assertEqual(sum(v is not None for v in vals), 6)
+        self.assertEqual(g.teacher(top_n=1)[0], g.best()[0])
+
+    def test_search_policy_in_session(self):
+        s = Session(LLMClient("http://127.0.0.1:9/v1", timeout_s=0.2), write_files=False)
+        s.new_game({"mode": "bag7", "agent": "search"})
+        d = next(m for m in s.submit("T") if m["type"] == "decision")
+        self.assertEqual(d["source"], "search")
+
+    def test_generator_labels_and_split(self):
+        import subprocess
+        with tempfile.TemporaryDirectory() as tmp:
+            r = subprocess.run([sys.executable, str(ROOT / "training" / "gen_teacher_data.py"), "--games", "5",
+                                "--max-pieces", "12", "--out", tmp, "--split", "0.6,0.2,0.2"],
+                               capture_output=True, text=True, timeout=300)
+            self.assertEqual(r.returncode, 0, r.stderr)
+            games = {}
+            for split in ("train", "val", "test"):
+                for line in open(Path(tmp) / f"{split}.jsonl"):
+                    smp = json.loads(line)
+                    m = smp["meta"]
+                    self.assertEqual(m["mapping"][m["label"]], m["teacher_id"])
+                    self.assertEqual(smp["messages"][2]["content"], str(m["label"]))
+                    self.assertIn(f"C=", smp["messages"][1]["content"])
+                    games.setdefault(m["game"], set()).add(split)
+            self.assertTrue(all(len(v) == 1 for v in games.values()))  # no game crosses splits
+            ev = subprocess.run([sys.executable, str(ROOT / "training" / "eval_offline.py"), "--data",
+                                 str(Path(tmp) / "train.jsonl"), "--no-model"], capture_output=True, text=True)
+            self.assertEqual(ev.returncode, 0, ev.stderr)
+            self.assertIn("L2/K=8", json.loads(ev.stdout)["results"])
+
+
 class ServerTest(unittest.TestCase):
     def test_tcp_roundtrip(self):
         from agent.server import Server

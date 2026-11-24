@@ -69,6 +69,17 @@ int tbt_game_scores(tbt_game* g, const double* weights, int n, double* out, int 
   return count;
 }
 
+int tbt_game_teacher(tbt_game* g, const double* weights, int n, int top_n, double robust, double* values_out, int cap) {
+  TeacherParams tp;
+  tp.top_n = top_n;
+  tp.robust = robust;
+  std::vector<double> vals;
+  const int id = teacher_candidate(g->game, Weights::from_array(weights, n), tp, nullptr, values_out ? &vals : nullptr);
+  if (values_out)
+    for (int i = 0; i < std::min(cap, static_cast<int>(vals.size())); ++i) values_out[i] = vals[i];
+  return id;
+}
+
 int tbt_game_piece_pressure(tbt_game* g, const double* weights, int n, double* out7) {
   const auto p = piece_pressure(g->game, Weights::from_array(weights, n));
   for (int i = 0; i < kPieceCount; ++i) out7[i] = p[i];

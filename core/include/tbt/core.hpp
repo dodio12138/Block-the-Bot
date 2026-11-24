@@ -192,6 +192,17 @@ int best_candidate(const Game& g, const Weights& w, double* score_out = nullptr)
 // Best achievable score for the defender if piece p were submitted next (NaN if not allowed).
 std::array<double, kPieceCount> piece_pressure(const Game& g, const Weights& w);
 
+// Two-ply search teacher (doc §10). Uses only public information: the next piece is unknown,
+// so each of the heuristic top-N placements is valued against every piece the attacker may
+// legally submit next:  value(a) = move_terms(a) + robust * min_p V(p) + (1 - robust) * mean_p V(p),
+// where V(p) is the best one-ply score after p and move_terms = landing + lines terms of a.
+struct TeacherParams {
+  int top_n = 8;
+  double robust = 0.5;
+};
+int teacher_candidate(const Game& g, const Weights& w, const TeacherParams& tp, double* value_out = nullptr,
+                      std::vector<double>* values = nullptr);
+
 struct Rng {
   uint64_t s;
   explicit Rng(uint64_t seed) : s(seed ? seed : 0x9E3779B97F4A7C15ull) {}

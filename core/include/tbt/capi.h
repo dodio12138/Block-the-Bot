@@ -29,6 +29,8 @@ TBT_API int tbt_game_allowed_mask(tbt_game* g);
 TBT_API int tbt_game_best(tbt_game* g, const double* weights, int n, double* score_out);
 /* writes evaluate() for every candidate (index = candidate id); returns count written */
 TBT_API int tbt_game_scores(tbt_game* g, const double* weights, int n, double* out, int cap);
+/* two-ply search teacher; values_out (cap entries, may be NULL) gets per-candidate values, NaN if unexplored */
+TBT_API int tbt_game_teacher(tbt_game* g, const double* weights, int n, int top_n, double robust, double* values_out, int cap);
 TBT_API int tbt_game_piece_pressure(tbt_game* g, const double* weights, int n, double* out7);
 TBT_API const char* tbt_game_state_json(tbt_game* g);
 TBT_API const char* tbt_game_candidates_json(tbt_game* g, int include_paths);

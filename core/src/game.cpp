@@ -425,4 +425,57 @@ std::array<double, kPieceCount> piece_pressure(const Game& g, const Weights& w) 
   return out;
 }
 
+int teacher_candidate(const Game& g, const Weights& w, const TeacherParams& tp, double* value_out,
+                      std::vector<double>* values) {
+  const auto& cands = g.candidates();
+  const double nan = std::numeric_limits<double>::quiet_NaN();
+  if (values) values->assign(cands.size(), nan);
+  if (cands.empty()) return -1;
+  std::vector<int> order(cands.size());
+  for (size_t i = 0; i < order.size(); ++i) order[i] = static_cast<int>(i);
+  std::vector<double> first(cands.size());
+  for (size_t i = 0; i < cands.size(); ++i) first[i] = evaluate(cands[i], w);
+  std::stable_sort(order.begin(), order.end(), [&](int a, int b) { return first[a] > first[b]; });
+  const int n = std::max(1, std::min(tp.top_n, static_cast<int>(order.size())));
+  if (n == 1) {
+    if (value_out) *value_out = first[order[0]];
+    if (values) (*values)[order[0]] = first[order[0]];
+    return order[0];
+  }
+  int best = order[0];
+  double best_v = -std::numeric_limits<double>::infinity();
+  for (int k = 0; k < n; ++k) {
+    const Candidate& c = cands[order[k]];
+    double v;
+    if (c.features.topout) {
+      v = -1e9;
+    } else {
+      Game next = g;
+      next.apply(c.id);
+      if (next.phase() == Phase::GameOver) {
+        v = -1e9;
+      } else {
+        const auto pr = piece_pressure(next, w);
+        double mn = std::numeric_limits<double>::infinity(), sum = 0.0;
+        int cnt = 0;
+        for (double x : pr) {
+          if (std::isnan(x)) continue;
+          mn = std::min(mn, x);
+          sum += x;
+          ++cnt;
+        }
+        const double leaf = cnt ? tp.robust * mn + (1.0 - tp.robust) * (sum / cnt) : first[order[k]];
+        v = w.landing * c.features.landing_height + w.lines * c.lines + leaf;
+      }
+    }
+    if (values) (*values)[order[k]] = v;
+    if (v > best_v) {
+      best_v = v;
+      best = order[k];
+    }
+  }
+  if (value_out) *value_out = best_v;
+  return best;
+}
+
 }  // namespace tbt

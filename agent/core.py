@@ -60,6 +60,8 @@ def lib():
     L.tbt_game_best.restype = ci
     L.tbt_game_scores.argtypes = [vp, cd, ci, cd, ci]
     L.tbt_game_scores.restype = ci
+    L.tbt_game_teacher.argtypes = [vp, cd, ci, ci, ctypes.c_double, cd, ci]
+    L.tbt_game_teacher.restype = ci
     L.tbt_game_piece_pressure.argtypes = [vp, cd, ci, cd]
     L.tbt_game_piece_pressure.restype = ci
     L.tbt_game_state_json.argtypes = [vp]
@@ -146,6 +148,15 @@ class CoreGame:
         out = (ctypes.c_double * cap)()
         k = lib().tbt_game_scores(self._h, w, n, out, cap)
         return [out[i] for i in range(k)]
+
+    def teacher(self, weights=None, top_n: int = 8, robust: float = 0.5) -> tuple[int, list[Optional[float]]]:
+        """Two-ply search teacher. Returns (candidate id, per-candidate values or None if unexplored)."""
+        w, n = _weights(weights)
+        cap = max(1, self.candidate_count)
+        out = (ctypes.c_double * cap)()
+        cid = lib().tbt_game_teacher(self._h, w, n, top_n, robust, out, cap)
+        vals = [None if out[i] != out[i] else out[i] for i in range(self.candidate_count)]
+        return cid, vals
 
     def pressure(self, weights=None) -> dict[str, Optional[float]]:
         w, n = _weights(weights)

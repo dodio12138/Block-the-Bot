@@ -75,14 +75,17 @@ def _header(state: dict, opp_hint: str) -> list[str]:
 
 
 def encode_direct(state: dict, cands: list[dict], scores: list[float], level: str = "L2", top_k: int = 8,
-                  opp_hint: str = "", shuffle_seed: int | None = None) -> Prompt:
+                  opp_hint: str = "", shuffle_seed: int | None = None, ids: list[int] | None = None) -> Prompt:
+    """`ids` (already ordered) overrides candidate selection and shuffling."""
     by_id = {c["id"]: c for c in cands}
-    if level == "L2":
-        ids = select_top_k(cands, scores, top_k)
-    else:
-        ids = [c["id"] for c in cands]
-    if shuffle_seed is not None:
-        random.Random(shuffle_seed).shuffle(ids)
+    if ids is None:
+        if level == "L2":
+            ids = select_top_k(cands, scores, top_k)
+        else:
+            ids = [c["id"] for c in cands]
+        if shuffle_seed is not None:
+            random.Random(shuffle_seed).shuffle(ids)
+    ids = list(ids)
     lines = _header(state, opp_hint)
     if level == "L0":
         vis = state["ruleset"]["visible_height"]

@@ -61,6 +61,8 @@ int cmd_sim(int argc, char** argv) {
   Attacker att = Attacker::Random;
   std::string replay_dir;
   bool json = false;
+  bool search = false;
+  TeacherParams tp;
   for (int i = 2; i < argc; ++i) {
     std::string a = argv[i];
     auto next = [&]() -> std::string { return i + 1 < argc ? argv[++i] : ""; };
@@ -72,6 +74,9 @@ int cmd_sim(int argc, char** argv) {
     else if (a == "--any-above") r.topout = TopOutRule::AnyAbove;
     else if (a == "--replay-dir") replay_dir = next();
     else if (a == "--json") json = true;
+    else if (a == "--defender") search = next() == "search";
+    else if (a == "--top-n") tp.top_n = std::stoi(next());
+    else if (a == "--robust") tp.robust = std::stod(next());
     else if (a == "--mode") r.mode = next() == "free" ? Mode::Free : Mode::Bag7;
     else if (a == "--attacker") {
       const std::string v = next();
@@ -98,7 +103,7 @@ int cmd_sim(int argc, char** argv) {
     while (g.phase() != Phase::GameOver && g.pieces_submitted() < max_pieces) {
       g.submit(pick_piece(g, att, rng, w));
       if (g.phase() == Phase::GameOver) break;
-      g.apply(best_candidate(g, w));
+      g.apply(search ? teacher_candidate(g, w, tp) : best_candidate(g, w));
     }
     if (g.phase() == Phase::GameOver) ++topouts;
     survived.push_back(g.pieces_placed());
@@ -157,6 +162,7 @@ int main(int argc, char** argv) {
   if (argc >= 2 && std::strcmp(argv[1], "replay") == 0) return cmd_replay(argc, argv);
   std::printf("tbt_headless %s\n  sim [--games N] [--mode free|bag7] [--attacker random|bag|adversarial|sz] [--seed S]\n"
               "      [--max-pieces M] [--start-height H] [--no-hold] [--any-above] [--replay-dir DIR] [--json]\n"
+              "      [--defender heuristic|search] [--top-n N] [--robust R]\n"
               "  replay FILE.tbr\n",
               kVersion);
   return argc >= 2 ? 2 : 0;

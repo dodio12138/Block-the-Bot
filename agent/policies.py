@@ -101,6 +101,17 @@ class HeuristicPolicy(Policy):
         return Decision(cid, "heuristic", "Dellacherie 风格一步评估")
 
 
+class SearchPolicy(Policy):
+    name, label = "search", "两步搜索（教师）"
+
+    def __init__(self, top_n: int = 8, robust: float = 0.5):
+        self.top_n, self.robust = top_n, robust
+
+    def decide(self, ctx: Context) -> Decision:
+        cid, _ = ctx.game.teacher(top_n=self.top_n, robust=self.robust)
+        return Decision(cid, "search", f"对前 {self.top_n} 个落点 × 下一块所有可能做两步评估")
+
+
 class RandomPolicy(Policy):
     name, label = "random", "随机（基线）"
 
@@ -247,6 +258,8 @@ def make_policy(name: str, llm: LLMClient, opts: dict) -> Policy:
         return RandomPolicy(int(opts.get("seed", 0)))
     if name == "llm":
         return DirectLLMPolicy(llm, opts.get("info_level", "L2"), int(opts.get("top_k", 8)))
+    if name == "search":
+        return SearchPolicy(int(opts.get("top_n", 8)), float(opts.get("robust", 0.5)))
     if name == "hier":
         return HierarchicalPolicy(llm, int(opts.get("valid_for", 5)))
     return HeuristicPolicy()
@@ -256,5 +269,6 @@ POLICY_INFO = [
     {"id": "heuristic", "label": HeuristicPolicy.label},
     {"id": "llm", "label": DirectLLMPolicy.label},
     {"id": "hier", "label": HierarchicalPolicy.label},
+    {"id": "search", "label": SearchPolicy.label},
     {"id": "random", "label": RandomPolicy.label},
 ]

@@ -221,6 +221,28 @@ static void test_determinism_and_replay() {
   CHECK(Game::replay(bad, out2, err) != Status::Ok || out2.hash() != h1);
 }
 
+static void test_teacher() {
+  Game g(rules(Mode::Bag7, true));
+  Rng rng(3);
+  const Weights w;
+  for (int t = 0; t < 25 && g.phase() != Phase::GameOver; ++t) {
+    const uint8_t m = g.allowed_mask();
+    int p;
+    do p = rng.below(kPieceCount); while (!(m & (1u << p)));
+    g.submit(static_cast<Piece>(p));
+    TeacherParams one;
+    one.top_n = 1;
+    CHECK(teacher_candidate(g, w, one) == best_candidate(g, w));
+    std::vector<double> vals;
+    const int a = teacher_candidate(g, w, TeacherParams{}, nullptr, &vals);
+    const int b = teacher_candidate(g, w, TeacherParams{});
+    CHECK(a == b);  // deterministic
+    CHECK(a >= 0 && a < static_cast<int>(g.candidates().size()));
+    CHECK(vals.size() == g.candidates().size() && !std::isnan(vals[a]));
+    g.apply(a);
+  }
+}
+
 int main() {
   struct T { const char* name; void (*fn)(); } tests[] = {
       {"shapes", test_shapes},
@@ -232,6 +254,7 @@ int main() {
       {"hold", test_hold},
       {"block_out", test_block_out},
       {"determinism_and_replay", test_determinism_and_replay},
+      {"teacher", test_teacher},
   };
   for (const auto& t : tests) {
     const int before = g_failures;

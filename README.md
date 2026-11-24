@@ -13,7 +13,7 @@ Godot 4.7 客户端 (game/)  ──TCP JSON-lines──▶  Python Agent 服务 
 ## 快速开始
 
 ```bash
-scripts/run_tests.sh      # 编译 C++ 核心 + 9 项规则测试 + 11 项 Agent 测试
+scripts/run_tests.sh      # 编译 C++ 核心 + 10 项规则测试 + 14 项 Agent 测试
 ```
 
 ```bash
@@ -73,6 +73,30 @@ python3 experiments/calibrate.py          # 用一步对抗出题者检验各关
 
 因此「7-Bag 对抗」默认关闭 AI 的 Hold。
 
+两步搜索教师（`--defender search`，可在游戏里选「两步搜索（教师）」）对同一个出题者的实测，每种配置 10 局：
+
+| 配置 | 启发式 | 两步搜索 | 每块耗时 |
+|---|---|---|---|
+| 自由出题，AI 有 Hold | 75.8 | **131.8** | ~41 ms |
+| 7-Bag，AI 无 Hold | 121.4 | **≥300**（10 局都没被推倒） | ~16 ms |
+
+## 训练与评估（P5 起步）
+
+两步搜索教师只使用公开信息：它并不知道下一块是什么，而是对出题者可能出的每一种方块都评估一遍，取最坏情况与平均情况的加权。
+
+```bash
+# 1) 教师数据：按局切分 train/val/test，候选顺序打乱，chat-JSONL 格式（可直接喂给常见 SFT 训练器）
+python3 training/gen_teacher_data.py --games 60 --out data/sft/v1
+
+# 2) 无训练基线：模型在测试集上的输出合法率、与教师的一致率、延迟和 Token，并附带无模型基线（启发式 / 总选第一个 / 随机）
+python3 training/eval_offline.py --data data/sft/v1/test.jsonl --limit 300
+
+# 3) 消融实验：策略 × 出题者 × 信息协议，与游戏走同一条会话代码路径
+python3 experiments/ablation.py --configs heuristic,search,llm:L2:8,llm:L2:4,llm:L1,hier:5,hier:3 --attackers adversarial,random
+```
+
+SFT 训练本身需要 torch / transformers / peft，本机尚未安装，所以这里只准备好了数据和评估工具。
+
 ## 目录
 
 ```
@@ -80,13 +104,13 @@ core/        C++17 规则核心、C API、无头 CLI（CMake）
 agent/       Python Agent 服务：core.py 绑定、protocol、llm、policies、memory、session、server
 game/        Godot 4.7 客户端（UI 全部由 scripts/main.gd 代码构建）
 tests/       core/test_core.cpp、agent/test_agent.py（内含假 LLM 服务器）
-experiments/ calibrate.py、mock_llm.py
+experiments/ calibrate.py、mock_llm.py、ablation.py
+training/    gen_teacher_data.py、eval_offline.py
 data/        challenges.json；运行时生成 logs/、replays/、leaderboard.json
 docs/        protocol.md
 ```
 
 ## 后续（文档 P4–P5）
 
-- 训练：用核心 + 束搜索教师导出 `(state, candidates, teacher_action)`，再做 SFT。
-- 系统性消融：L0/L1/L2、K = 4/8/16、每块调用 vs 每 3/5 块更新策略。
+- 安装推理与训练依赖后：跑无训练基线 → 用 LoRA 做 SFT → 跑完整消融。
 - 回放分享 / 「挑战同一序列」、限时出题模式。
