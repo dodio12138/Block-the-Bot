@@ -1,0 +1,9 @@
+# Block the Bot LoRA 微调（training/train_lora.py），沿用 FromLev 的训练环境。CPU 也能训（慢）；有 NVIDIA 显卡快得多。
+# Intel Mac：PyPI 上最后一个 x86_64 的 torch 是 2.2.2（只有 CPU），它是按 numpy 1.x 编的。
+torch>=2.2.2
+transformers==4.51.3
+peft==0.15.2
+accelerate==1.6.0
+safetensors>=0.4.3
+# 转换适配器成 GGUF（llama.cpp 的 convert_lora_to_gguf.py，用它源码里自带的 gguf-py）还要：
+numpy<2

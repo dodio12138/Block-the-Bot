@@ -11,3 +11,6 @@ data/opponent_profile_*.json
 .DS_Store
 data/sft/
 experiments/results/
+models/
+training/out*/
+training/kaggle/dataset/
