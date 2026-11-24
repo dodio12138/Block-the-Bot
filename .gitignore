@@ -12,5 +12,8 @@ data/opponent_profile_*.json
 data/sft/
 experiments/results/
 models/
+game/models/*.gguf
+game/bin/tbt_ai_worker
+game/bin/tbt_ai_worker.exe
 training/out*/
 training/kaggle/dataset/

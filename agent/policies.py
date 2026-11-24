@@ -18,6 +18,7 @@ from typing import Optional
 from .core import DEFAULT_WEIGHTS, CoreGame
 from .llm import LLMClient, parse_action_id, parse_strategy
 from .protocol import encode_direct, encode_strategy
+from .worker_llm import id_grammar, strategy_grammar
 
 STRATEGY_PRESETS: dict[str, list[float]] = {
     # landing, lines, row_t, col_t, holes, wells, bump, max_h
@@ -134,8 +135,11 @@ def _fallback(ctx: Context, why: str, d: Optional[Decision] = None) -> Decision:
 class DirectLLMPolicy(Policy):
     name, label = "llm", "0.6B 直接决策"
 
-    def __init__(self, llm: LLMClient, level: str = "L2", top_k: int = 8, shuffle: bool = True):
+    def __init__(self, llm: LLMClient, level: str = "L2", top_k: int = 8, shuffle: bool = True,
+                 constrained: bool = True):
         self.llm, self.level, self.top_k, self.shuffle = llm, level, top_k, shuffle
+        # constrained decoding: a GBNF grammar that only admits the shown candidate ids
+        self.constrained = constrained and getattr(llm, "supports_grammar", False)
 
     def decide(self, ctx: Context) -> Decision:
         if not self.llm.available():
@@ -143,7 +147,8 @@ class DirectLLMPolicy(Policy):
         scores = ctx.game.scores()
         seed = ctx.state["state_version"] if self.shuffle else None
         prompt = encode_direct(ctx.state, ctx.candidates, scores, self.level, self.top_k, ctx.opp_hint, seed)
-        res = self.llm.chat(prompt.system, prompt.user, max_tokens=8)
+        grammar = id_grammar(len(prompt.mapping)) if self.constrained else None
+        res = self.llm.chat(prompt.system, prompt.user, max_tokens=8, grammar=grammar)
         d = Decision(-1, "llm", llm_called=True, prompt=prompt.user, raw=res.text, inference_ms=res.latency_ms,
                      tokens_in=res.prompt_tokens, tokens_out=res.completion_tokens,
                      tokens_estimated=res.tokens_estimated, shown_ids=prompt.mapping)
@@ -213,7 +218,8 @@ class HierarchicalPolicy(Policy):
             if self.llm.available():
                 prev = (self.strategy or {}).get("strategy", "")
                 prompt = encode_strategy(ctx.state, ctx.opp_hint, ctx.recent, prev, ctx.state["lines_total"])
-                res = self.llm.chat(prompt.system, prompt.user, max_tokens=60)
+                grammar = strategy_grammar(list(STRATEGY_PRESETS)) if getattr(self.llm, "supports_grammar", False) else None
+                res = self.llm.chat(prompt.system, prompt.user, max_tokens=60, grammar=grammar)
                 self.calls += 1
                 d.llm_called, d.prompt, d.raw = True, prompt.user, res.text
                 d.inference_ms, d.tokens_in, d.tokens_out = res.latency_ms, res.prompt_tokens, res.completion_tokens
@@ -260,7 +266,8 @@ def make_policy(name: str, llm: LLMClient, opts: dict) -> Policy:
     if name == "random":
         return RandomPolicy(int(opts.get("seed", 0)))
     if name == "llm":
-        return DirectLLMPolicy(llm, opts.get("info_level", "L2"), int(opts.get("top_k", 8)))
+        return DirectLLMPolicy(llm, opts.get("info_level", "L2"), int(opts.get("top_k", 8)),
+                               constrained=bool(opts.get("constrained", True)))
     if name == "search":
         return SearchPolicy(int(opts.get("top_n", 8)), float(opts.get("robust", 0.5)))
     if name == "hier":

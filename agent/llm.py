@@ -57,7 +57,9 @@ class LLMClient:
         return {"url": self.base_url, "model": self.model, "served_model": self.served_model,
                 "available": bool(self._avail)}
 
-    def chat(self, system: str, user: str, max_tokens: int = 8) -> LLMResult:
+    supports_grammar = True  # llama-server accepts a GBNF "grammar" field
+
+    def chat(self, system: str, user: str, max_tokens: int = 8, grammar: Optional[str] = None) -> LLMResult:
         body = {
             "model": self.model,
             "messages": [{"role": "system", "content": system}, {"role": "user", "content": user}],
@@ -67,6 +69,8 @@ class LLMClient:
             # Qwen3: disable the thinking block (llama-server forwards these to the chat template).
             "chat_template_kwargs": {"enable_thinking": False},
         }
+        if grammar:
+            body["grammar"] = grammar
         req = urllib.request.Request(self.base_url + "/chat/completions", data=json.dumps(body).encode(),
                                      headers={"Content-Type": "application/json"}, method="POST")
         t0 = time.perf_counter()

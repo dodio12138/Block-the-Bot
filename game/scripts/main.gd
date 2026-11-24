@@ -411,8 +411,11 @@ func _on_hello(msg: Dictionary) -> void:
 
 
 func _update_llm_label() -> void:
+	var embedded := String(llm_info.get("url", "")) == "embedded"
 	if bool(llm_info.get("available", false)):
-		ui["llm"].text = "0.6B 服务：在线（%s）" % String(llm_info.get("served_model", llm_info.get("model", "")))
+		ui["llm"].text = ("0.6B：游戏内嵌推理（%s）" if embedded else "0.6B 服务：在线（%s）") % String(llm_info.get("served_model", llm_info.get("model", "")))
+	elif embedded:
+		ui["llm"].text = "0.6B：内嵌推理未就绪 → 启发式回退\n%s" % String(llm_info.get("error", ""))
 	else:
 		ui["llm"].text = "0.6B 服务：离线 → 模型模式将使用启发式回退\n(%s)" % String(llm_info.get("url", ""))
 
@@ -601,7 +604,7 @@ func _refresh_dev() -> void:
 	var d: Dictionary = ui.get("last_decision", {})
 	var t := ""
 	t += "调用 %s 次 / %s 块（每块 %.2f）  回退率 %.0f%%  合法率 %s  调用失败率 %s\n" % [str(s.get("llm_calls", 0)), str(s.get("turns", 0)), float(s.get("calls_per_piece", 0.0)), 100.0 * float(s.get("fallback_rate", 0.0)), str(s.get("legal_rate", "-")), str(s.get("call_fail_rate", "-"))]
-	t += "延迟 P50 %s ms · P95 %s ms\n" % [str(s.get("p50_ms", "-")), str(s.get("p95_ms", "-"))]
+	t += "模型调用 P50 %s ms · P95 %s ms\n" % [str(s.get("p50_ms", "-")), str(s.get("p95_ms", "-"))]
 	t += "平均 Token 入 %s / 出 %s\n" % [str(s.get("avg_tok_in", "-")), str(s.get("avg_tok_out", "-"))]
 	t += "来源统计 %s\n" % JSON.stringify(s.get("sources", {}))
 	if not d.is_empty():

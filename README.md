@@ -13,7 +13,7 @@ Godot 4.7 客户端 (game/)  ──TCP JSON-lines──▶  Python Agent 服务 
 ## 快速开始
 
 ```bash
-scripts/run_tests.sh      # 编译 C++ 核心 + 10 项规则测试 + 14 项 Agent 测试
+scripts/run_tests.sh      # 编译 C++ 核心（含内嵌推理进程）+ 10 项规则测试 + 18 项 Agent 测试
 ```
 
 ```bash
@@ -23,15 +23,25 @@ scripts/run_game.sh       # 启动游戏；客户端会自动拉起 agent/server
 - 默认 Godot 路径是 Steam 版，可用 `GODOT=/path/to/Godot` 覆盖；Python 可用 `TBT_PYTHON` 覆盖。
 - 快捷键：`I O T S Z J L` 出题，`N` 新对局，`F1` 开发者模式，`Esc` 退出回放。
 
-### 接入真实的 Qwen3-0.6B
+### 模型与推理内嵌在游戏里
 
-Agent 服务调用任意 OpenAI 兼容接口（默认 `http://127.0.0.1:8080/v1`）。本机目前**没有**安装推理运行时，HF 缓存里的 Qwen3-0.6B 也只有空目录。接入方式之一：
+游戏自带推理进程 `game/bin/tbt_ai_worker`（复制改编自 FromLev 的 `sd_ai_worker`）。它把 llama.cpp b11700 静态链接进去，只用 CPU，模型放在 `game/models/`。Agent 服务启动时只要发现这两样，就自动用内嵌推理，不需要另外开任何服务：
 
 ```bash
-llama-server -m Qwen3-0.6B-Q8_0.gguf --port 8080
+cmake --build core/build --target tbt_ai_worker    # 第一次编译 llama.cpp 需要几分钟
+scripts/run_game.sh
 ```
 
-或者设置 `TBT_LLM_URL` / `TBT_LLM_MODEL` 指向 LM Studio、Ollama 的 `/v1` 接口。服务离线时，「0.6B 直接决策 / 分层策略」会自动回退到启发式，并在面板和日志中标记为 `fallback`。
+模型文件不进 git，放法见 [game/models/README.md](game/models/README.md)。底模是 Qwen3-0.6B-Q8_0（Apache-2.0），适配器是本项目训练的 `bot-lora-v1.gguf`。
+
+「0.6B 直接决策」用 GBNF 约束解码：模型只能输出当前候选里的 ID。「分层策略」同样只能输出合法的策略 JSON。Agent 服务仍然会再校验一遍；推理进程崩溃或超时时，自动回退到启发式并记录。
+
+也可以改用外部的 OpenAI 兼容接口，例如 llama-server、LM Studio 或 Ollama：
+
+```bash
+scripts/start_llm.sh --lora game/models/bot-lora-v1.gguf
+TBT_LLM=http scripts/run_game.sh
+```
 
 不接模型也能测试整条 LLM 管线：
 

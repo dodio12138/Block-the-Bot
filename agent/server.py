@@ -20,6 +20,7 @@ if __package__ in (None, ""):
     __package__ = "agent"
 
 from agent.llm import LLMClient  # noqa: E402
+from agent.worker_llm import embedded_ready, shared_worker  # noqa: E402
 from agent.session import Session  # noqa: E402
 
 DEFAULT_PORT = int(os.environ.get("TBT_PORT", "47800"))
@@ -32,7 +33,7 @@ class Handler(socketserver.StreamRequestHandler):
 
     def handle(self) -> None:
         srv: Server = self.server  # type: ignore[assignment]
-        session = Session(LLMClient(srv.llm_url, srv.llm_model, srv.llm_timeout))
+        session = Session(srv.make_llm())
         print(f"[agent] client connected {self.client_address}", flush=True)
         for raw in self.rfile:
             line = raw.decode("utf-8", "replace").strip()
@@ -70,9 +71,14 @@ class Server(socketserver.ThreadingTCPServer):
     allow_reuse_address = True
     daemon_threads = True
 
-    def __init__(self, port: int, llm_url: str, llm_model: str, llm_timeout: float):
-        self.llm_url, self.llm_model, self.llm_timeout = llm_url, llm_model, llm_timeout
+    def __init__(self, port: int, llm_url: str, llm_model: str, llm_timeout: float, backend: str = "http"):
+        self.llm_url, self.llm_model, self.llm_timeout, self.backend = llm_url, llm_model, llm_timeout, backend
         super().__init__(("127.0.0.1", port), Handler)
+
+    def make_llm(self):
+        if self.backend == "embedded":
+            return shared_worker(self.llm_timeout)  # one loaded model shared by every session
+        return LLMClient(self.llm_url, self.llm_model, self.llm_timeout)
 
 
 def main() -> None:
@@ -82,12 +88,22 @@ def main() -> None:
     ap.add_argument("--llm-url", default=DEFAULT_URL)
     ap.add_argument("--llm-model", default=DEFAULT_MODEL)
     ap.add_argument("--llm-timeout", type=float, default=DEFAULT_TIMEOUT)
+    ap.add_argument("--llm", choices=["auto", "embedded", "http"], default=os.environ.get("TBT_LLM", "auto"),
+                    help="auto: use the in-game worker + game/models if present, else the HTTP endpoint")
     a = ap.parse_args()
-    llm = LLMClient(a.llm_url, a.llm_model, a.llm_timeout)
+    backend = a.llm
+    if backend == "auto":
+        explicit_http = "--llm-url" in sys.argv or bool(os.environ.get("TBT_LLM_URL"))
+        backend = "embedded" if embedded_ready() and not explicit_http else "http"
     print(f"[agent] Block the Bot agent service on 127.0.0.1:{a.port}", flush=True)
-    print(f"[agent] LLM endpoint {a.llm_url} -> {'online' if llm.available() else 'offline (heuristic fallback)'}",
-          flush=True)
-    with Server(a.port, a.llm_url, a.llm_model, a.llm_timeout) as srv:
+    with Server(a.port, a.llm_url, a.llm_model, a.llm_timeout, backend) as srv:
+        llm = srv.make_llm()
+        if backend == "embedded":
+            ok = llm.available(force=True)  # load the model once at startup
+            print(f"[agent] LLM: embedded worker -> {llm.served_model if ok else 'FAILED: ' + llm.error}", flush=True)
+        else:
+            print(f"[agent] LLM: {a.llm_url} -> {'online' if llm.available() else 'offline (heuristic fallback)'}",
+                  flush=True)
         try:
             srv.serve_forever()
         except KeyboardInterrupt:

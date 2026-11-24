@@ -245,6 +245,44 @@ class TeacherDataTest(unittest.TestCase):
             self.assertIn("L2/K=8", json.loads(ev.stdout)["results"])
 
 
+class EmbeddedWorkerTest(unittest.TestCase):
+    def test_grammars(self):
+        from agent.worker_llm import id_grammar, strategy_grammar
+        self.assertEqual(id_grammar(3), 'root ::= "0" | "1" | "2"')
+        g = strategy_grammar(["dig", "flat"])
+        self.assertIn('strat ::= "\\"dig\\"" | "\\"flat\\""', g)
+
+    @unittest.skipUnless((ROOT / "game" / "bin" / "tbt_ai_worker").exists(), "tbt_ai_worker not built")
+    def test_mock_worker_session(self):
+        from agent.worker_llm import WorkerLLM
+        w = WorkerLLM(backend="mock", timeout_s=5)
+        try:
+            self.assertTrue(w.available(force=True))
+            self.assertEqual(w.status()["url"], "embedded")
+            s = Session(w, write_files=False)
+            s.new_game({"mode": "bag7", "agent": "llm"})
+            d = next(m for m in s.submit("T") if m["type"] == "decision")
+            self.assertEqual(d["source"], "llm")  # mock answers "0", always a legal local id
+            s.new_game({"mode": "bag7", "agent": "hier"})
+            d = next(m for m in s.submit("S") if m["type"] == "decision")
+            self.assertEqual(d["strategy"]["source"], "llm")
+        finally:
+            w.close()
+
+    @unittest.skipUnless((ROOT / "game" / "bin" / "tbt_ai_worker").exists()
+                         and list((ROOT / "game" / "models").glob("*.gguf")), "worker or model missing")
+    def test_real_model_constrained(self):
+        from agent.worker_llm import WorkerLLM, id_grammar
+        w = WorkerLLM(timeout_s=60)
+        try:
+            self.assertTrue(w.available(force=True), w.error)
+            r = w.chat("Reply with a number.", "Pick one of 0, 1, 2. /no_think", max_tokens=4, grammar=id_grammar(3))
+            self.assertTrue(r.ok, r.error)
+            self.assertIn(r.text.strip(), {"0", "1", "2"})
+        finally:
+            w.close()
+
+
 class ServerTest(unittest.TestCase):
     def test_tcp_roundtrip(self):
         from agent.server import Server
