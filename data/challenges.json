@@ -1,0 +1,80 @@
+{
+ "challenges": [
+  {
+   "id": "warmup",
+   "name": "热身：推倒它",
+   "description": "空棋盘，自由出题，可用 Hold。120 块内让 AI Top-out。",
+   "mode": "free",
+   "hold": true,
+   "budget": 120,
+   "board": []
+  },
+  {
+   "id": "tower",
+   "name": "摇摇欲坠的高塔",
+   "description": "AI 开局就有 10 行垃圾行。45 块内击倒它。",
+   "mode": "free",
+   "hold": true,
+   "budget": 45,
+   "board": [
+    "X.XXXXXXXX",
+    "XXXXX.XXXX",
+    "XXXXXXXX.X",
+    "XXXXXXXX.X",
+    "X.XXXXXXXX",
+    "XXX.XXXXXX",
+    "XXXXXXXXX.",
+    "XXXXXXXXX.",
+    "XXXXXXXX.X",
+    "XXXXXX.XXX"
+   ]
+  },
+  {
+   "id": "swiss",
+   "name": "瑞士奶酪",
+   "description": "6 行布满空洞的地基，AI 没有 Hold。35 块内击倒它。",
+   "mode": "free",
+   "hold": false,
+   "budget": 35,
+   "board": [
+    ".XX.XX.XX.",
+    "XX.XX.XX.X",
+    "X.XX.XX.XX",
+    ".XX.XX.XX.",
+    "XX.XX.XX.X",
+    "X.XX.XX.XX"
+   ]
+  },
+  {
+   "id": "bag_siege",
+   "name": "7-Bag 围城",
+   "description": "7-Bag 规则 + 12 行垃圾行，AI 没有 Hold。70 块内击倒它。",
+   "mode": "bag7",
+   "hold": false,
+   "budget": 70,
+   "board": [
+    "XXXXXXXX..",
+    "XXXXXXX.X.",
+    ".XX.XXXXXX",
+    "X.XXXXXXX.",
+    "X.XX.XXXXX",
+    "X.XXXXX.XX",
+    ".XXXXXX.XX",
+    "XXX.X.XXXX",
+    "XXXX.X.XXX",
+    "XXXXX.XXX.",
+    "XXXXXX.X.X",
+    "X.XXX.XXXX"
+   ]
+  },
+  {
+   "id": "bag_master",
+   "name": "7-Bag 大师",
+   "description": "公平的 7-Bag，空棋盘，AI 没有 Hold。130 块内击倒它——只有排序能帮你。",
+   "mode": "bag7",
+   "hold": false,
+   "budget": 130,
+   "board": []
+  }
+ ]
+}

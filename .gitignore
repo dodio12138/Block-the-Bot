@@ -1,0 +1,11 @@
+core/build/
+game/.godot/
+__pycache__/
+*.pyc
+data/logs/*
+data/replays/*
+!data/logs/.gitkeep
+!data/replays/.gitkeep
+data/leaderboard.json
+data/opponent_profile_*.json
+.DS_Store
