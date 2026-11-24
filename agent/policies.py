@@ -60,6 +60,7 @@ class Decision:
     tokens_estimated: bool = False
     llm_called: bool = False
     fallback: bool = False
+    call_failed: bool = False  # the model call itself failed (timeout / HTTP error), not a bad answer
     prompt: str = ""
     raw: str = ""
     strategy: Optional[dict] = None
@@ -147,6 +148,7 @@ class DirectLLMPolicy(Policy):
                      tokens_in=res.prompt_tokens, tokens_out=res.completion_tokens,
                      tokens_estimated=res.tokens_estimated, shown_ids=prompt.mapping)
         if not res.ok:
+            d.call_failed = True
             return _fallback(ctx, f"模型调用失败（{res.error}）→ 回退", d)
         local = parse_action_id(res.text)
         if local is None or not (0 <= local < len(prompt.mapping)):
@@ -216,6 +218,7 @@ class HierarchicalPolicy(Policy):
                 d.llm_called, d.prompt, d.raw = True, prompt.user, res.text
                 d.inference_ms, d.tokens_in, d.tokens_out = res.latency_ms, res.prompt_tokens, res.completion_tokens
                 d.tokens_estimated = res.tokens_estimated
+                d.call_failed = not res.ok
                 obj = parse_strategy(res.text) if res.ok else None
                 if obj and obj.get("strategy") in STRATEGY_PRESETS:
                     strat = {"strategy": obj["strategy"], "source": "llm",

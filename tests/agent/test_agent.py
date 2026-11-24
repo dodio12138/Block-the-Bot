@@ -155,6 +155,21 @@ class SessionTest(unittest.TestCase):
         finally:
             srv.shutdown()
 
+    def test_timeout_is_call_failure_not_invalid(self):
+        srv, url = start_fake()
+        try:
+            s = Session(LLMClient(url, timeout_s=2), self.data, write_files=False)
+            s.new_game({"mode": "bag7", "agent": "llm"})
+            from agent.llm import LLMResult
+            s.llm.chat = lambda *a, **k: LLMResult(False, latency_ms=6000.0, error="TimeoutError: timed out")
+            d = next(m for m in self.play(s, "T") if m["type"] == "decision")
+            self.assertEqual(d["source"], "fallback")
+            self.assertEqual(s.stats["call_failures"], 1)
+            self.assertEqual(s.stats["invalid_outputs"], 0)
+            self.assertIsNone(s.state_msg()["dev"]["legal_rate"])
+        finally:
+            srv.shutdown()
+
     def test_offline_llm_falls_back(self):
         s = Session(LLMClient("http://127.0.0.1:9/v1", timeout_s=0.2), self.data, write_files=False)
         s.new_game({"mode": "bag7", "agent": "llm"})

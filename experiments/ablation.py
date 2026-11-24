@@ -47,13 +47,14 @@ def run_game(session: Session, opts: dict, mode: str, hold: bool, attacker: str,
     dev = session.state_msg()["dev"]
     return {"survived": st["pieces_placed"], "lines": st["lines_total"], "topout": st["game_over"],
             "llm_calls": dev["llm_calls"], "turns": dev["turns"], "fallbacks": session.stats["fallbacks"],
-            "invalid": session.stats["invalid_outputs"], "lat": list(session.stats["lat"]),
+            "invalid": session.stats["invalid_outputs"], "call_failures": session.stats["call_failures"], "lat": list(session.stats["lat"]),
             "tok_in": list(session.stats["tok_in"]), "decide_ms": list(session.stats["decide_ms"])}
 
 
 def summarize(games: list[dict]) -> dict:
     turns = sum(x["turns"] for x in games)
     calls = sum(x["llm_calls"] for x in games)
+    failed = sum(x["call_failures"] for x in games)
     lat = sorted(v for x in games for v in x["lat"])
     tok = [v for x in games for v in x["tok_in"]]
     dms = [v for x in games for v in x["decide_ms"]]
@@ -64,7 +65,8 @@ def summarize(games: list[dict]) -> dict:
         "topout_rate": round(sum(x["topout"] for x in games) / len(games), 2),
         "calls_per_piece": round(calls / turns, 3) if turns else 0,
         "fallback_rate": round(sum(x["fallbacks"] for x in games) / turns, 3) if turns else 0,
-        "legal_rate": round(1 - sum(x["invalid"] for x in games) / calls, 3) if calls else None,
+        "legal_rate": round(1 - sum(x["invalid"] for x in games) / (calls - failed), 3) if calls - failed > 0 else None,
+        "call_fail_rate": round(failed / calls, 3) if calls else None,
         "p50_ms": round(lat[len(lat) // 2], 1) if lat else None,
         "p95_ms": round(lat[min(len(lat) - 1, int(0.95 * len(lat)))], 1) if lat else None,
         "avg_tok_in": round(statistics.mean(tok), 1) if tok else None,
@@ -103,7 +105,7 @@ def main():
             print(json.dumps(row, ensure_ascii=False), file=sys.stderr, flush=True)
 
     cols = ["config", "attacker", "mean_survived", "median_survived", "mean_lines", "topout_rate", "calls_per_piece",
-            "fallback_rate", "legal_rate", "p50_ms", "p95_ms", "avg_tok_in", "decide_ms_mean"]
+            "fallback_rate", "legal_rate", "call_fail_rate", "p50_ms", "p95_ms", "avg_tok_in", "decide_ms_mean"]
     print("| " + " | ".join(cols) + " |")
     print("|" + "---|" * len(cols))
     for r in rows:

@@ -15,7 +15,7 @@ from typing import Optional
 
 DEFAULT_URL = os.environ.get("TBT_LLM_URL", "http://127.0.0.1:8080/v1")
 DEFAULT_MODEL = os.environ.get("TBT_LLM_MODEL", "qwen3-0.6b")
-DEFAULT_TIMEOUT = float(os.environ.get("TBT_LLM_TIMEOUT", "6"))
+DEFAULT_TIMEOUT = float(os.environ.get("TBT_LLM_TIMEOUT", "12"))
 
 
 @dataclass

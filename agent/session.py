@@ -152,7 +152,7 @@ class Session:
         self.winner, self.result_text, self.timeline = None, "", []
         self.leaderboard_rank = None
         self.replay_path = ""
-        self.stats = {"turns": 0, "llm_calls": 0, "fallbacks": 0, "invalid_outputs": 0, "lat": [], "tok_in": [], "tok_out": [],
+        self.stats = {"turns": 0, "llm_calls": 0, "fallbacks": 0, "invalid_outputs": 0, "call_failures": 0, "lat": [], "tok_in": [], "tok_out": [],
                       "decide_ms": [], "sources": {}}
         self.game_id = time.strftime("%Y%m%d-%H%M%S-") + secrets.token_hex(2)
         self._log({"event": "GameStarted", "cfg": self.cfg, "core_version": core_version(),
@@ -230,7 +230,9 @@ class Session:
             s["tok_out"].append(d.tokens_out)
         if d.fallback:
             s["fallbacks"] += 1
-            if d.llm_called:
+            if d.llm_called and d.call_failed:
+                s["call_failures"] += 1
+            elif d.llm_called:
                 s["invalid_outputs"] += 1
 
         n = after["pieces_submitted"]
@@ -274,7 +276,10 @@ class Session:
             "turns": s.get("turns", 0), "llm_calls": s.get("llm_calls", 0),
             "calls_per_piece": round(s["llm_calls"] / s["turns"], 3) if s.get("turns") else 0.0,
             "fallback_rate": round(s["fallbacks"] / s["turns"], 3) if s.get("turns") else 0.0,
-            "legal_rate": round(1 - s["invalid_outputs"] / s["llm_calls"], 3) if s.get("llm_calls") else None,
+            # legal rate counts only answers that came back; call failures (timeouts) are reported separately
+            "legal_rate": round(1 - s["invalid_outputs"] / (s["llm_calls"] - s["call_failures"]), 3)
+            if s.get("llm_calls", 0) - s.get("call_failures", 0) > 0 else None,
+            "call_fail_rate": round(s["call_failures"] / s["llm_calls"], 3) if s.get("llm_calls") else None,
             "p50_ms": round(statistics.median(lat), 1) if lat else None,
             "p95_ms": round(lat[min(len(lat) - 1, int(0.95 * len(lat)))], 1) if lat else None,
             "avg_tok_in": round(statistics.mean(s["tok_in"]), 1) if s.get("tok_in") else None,

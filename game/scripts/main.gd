@@ -600,7 +600,7 @@ func _refresh_dev() -> void:
 	var s: Dictionary = ui.get("dev_stats", {})
 	var d: Dictionary = ui.get("last_decision", {})
 	var t := ""
-	t += "调用 %s 次 / %s 块（每块 %.2f）  回退率 %.0f%%  合法率 %s\n" % [str(s.get("llm_calls", 0)), str(s.get("turns", 0)), float(s.get("calls_per_piece", 0.0)), 100.0 * float(s.get("fallback_rate", 0.0)), str(s.get("legal_rate", "-"))]
+	t += "调用 %s 次 / %s 块（每块 %.2f）  回退率 %.0f%%  合法率 %s  调用失败率 %s\n" % [str(s.get("llm_calls", 0)), str(s.get("turns", 0)), float(s.get("calls_per_piece", 0.0)), 100.0 * float(s.get("fallback_rate", 0.0)), str(s.get("legal_rate", "-")), str(s.get("call_fail_rate", "-"))]
 	t += "延迟 P50 %s ms · P95 %s ms\n" % [str(s.get("p50_ms", "-")), str(s.get("p95_ms", "-"))]
 	t += "平均 Token 入 %s / 出 %s\n" % [str(s.get("avg_tok_in", "-")), str(s.get("avg_tok_out", "-"))]
 	t += "来源统计 %s\n" % JSON.stringify(s.get("sources", {}))

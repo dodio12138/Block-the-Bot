@@ -95,7 +95,46 @@ python3 training/eval_offline.py --data data/sft/v1/test.jsonl --limit 300
 python3 experiments/ablation.py --configs heuristic,search,llm:L2:8,llm:L2:4,llm:L1,hier:5,hier:3 --attackers adversarial,random
 ```
 
-SFT 训练本身需要 torch / transformers / peft，本机尚未安装，所以这里只准备好了数据和评估工具。
+### 训练（Kaggle T4，流程沿用 FromLev）
+
+```bash
+scripts/pack_kaggle.sh                       # 打包 L2 样本 + 训练脚本，上传为私有数据集 block-the-bot-sft
+# 在 Kaggle 导入 training/kaggle/block_the_bot_lora.ipynb，选 GPU T4 x2，然后 Save & Run All
+scripts/convert_lora.sh training/out/adapter models/bot-lora-v1.gguf
+scripts/start_llm.sh --lora models/bot-lora-v1.gguf
+```
+
+本机推理用的是 llama.cpp 官方预编译版 b12651（macOS x64，放在 `~/tools/llama.cpp/`），模型是 Qwen3-0.6B-Q8_0（放在 `~/models/qwen3-0.6b/`）。训练环境、底模和 LoRA 转换脚本都直接复用 FromLev 里的（见 `scripts/train_lora.sh`、`scripts/convert_lora.sh`）。
+
+### 结果：LoRA v1
+
+v1 只用 L2 样本训练：6378 条，2 遍，r=16，在 T4 上约 28 分钟，验证损失从 4.05 降到 0.515。
+
+离线评测：测试集 841 条 L2 样本，来自训练时没见过的对局。
+
+| | 未训练 0.6B | **LoRA v1** | 启发式 | 随机 |
+|---|---|---|---|---|
+| 输出合法 ID | 0%（回答 `C` 之类） | **100%** | — | — |
+| 与教师一致 | 0% | **71.7%** | 80.6% | 12.5% |
+| 延迟（本机 CPU） | P50 1.45 s | **P50 1.08 s / P95 1.26 s** | <1 ms | — |
+
+模型最常选的位置只占 14.7%（均匀分布是 12.5%），说明它没有靠固定位置投机。
+
+游戏内对比：7-Bag，AI 无 Hold，每种配置 5 局，上限 150 块。
+
+| 防守者 | 对抗型出题者：平均存活 | Top-out 率 | 随机出题者：平均存活 |
+|---|---|---|---|
+| 启发式 | 125.4 | 0.8 | 150（未倒） |
+| **0.6B + LoRA v1** | **137.0** | 0.8 | 150（未倒） |
+| 两步搜索（教师） | 150（未倒） | 0 | 150（未倒） |
+
+在对抗型出题者下，0.6B 每块都调用模型（每块 1 次），没有出现回退，输出全部合法。
+
+在随机出题者下（补测，超时上限 12 秒），输出合法率同样是 100%，但有 12% 的调用超时、回退到了启发式。原因是测试期间这台机器被其他程序占满（负载均值约 120）。llama-server 日志显示，机器空闲时每次请求平均约 1.03 秒，没有超过 4 秒的。所以统计时把「调用失败（超时）」和「输出非法」分开计数。
+
+需要注意两点：
+- 每种配置只有 5 局，样本很小；
+- 对抗型出题者是按启发式的弱点来挑方块的，所以和启发式「不一样」的防守者天然占一点便宜。
 
 ## 目录
 
